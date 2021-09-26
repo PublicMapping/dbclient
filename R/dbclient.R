@@ -1,5 +1,12 @@
 ####  DistrictBuilder API client
 
+## TODO:
+##
+## - Package build
+## - Planscore API
+## - Metadata extraction
+## - Convert to geomander format
+
 ## .onLoad
 ##
 ## Intended to be called on package load
@@ -11,8 +18,8 @@
   op <- options()
   op.new <- list(
     dbclient.server = "https://app.districtbuilder.org",
-    dbclient.retries = 2,
-    dbclient.delay = 1,
+    dbclient.retries = 4,
+    dbclient.delay = 2,
     dbclient.verbose = 2,
     dbclient.clobber = FALSE,
     dbclient.gzip = TRUE
@@ -20,7 +27,6 @@
   )
   toset <- !(names(op.new) %in% names(op))
   if(any(toset)) options(op.new[toset])
-  options(op.new)
 
   invisible()
 }
@@ -192,4 +198,5 @@ retrieve_planlist<-function(page,pagesize) {
 # TODO: File bugs
 #-- api should return 404 on malformed requests, not 200
 #-- globalProjects api should include completed flag in metadata
+#-- page numbers shift as new plans are added -- need date range to stabilize
 
