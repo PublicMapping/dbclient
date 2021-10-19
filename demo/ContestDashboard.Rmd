@@ -1,0 +1,250 @@
+---
+title: "Map Across America Dashboard"
+author:
+- name: Micah Altman
+  url: https://micahaltman.com
+  affiliation: MIT Libraries -- [Center for Research on Equitable and Open Scholarship](
+    https://libraries.mit.edu/creos/)
+  affiliation_url: https://libraries.mit.edu/creos/
+  orcid_id: 0000-0001-7382-6960
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 1
+    number_section: yes
+    theme: journal
+    highlight: zenburn
+    code_folding: hide
+    includes:
+      in_header: header.html
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+runtime: shiny
+params:
+  refresh_data:
+    value: no
+    choices:
+    - yes
+    - no
+  clean_data:
+    value: no
+    choices:
+    - yes
+    - no
+  debug:
+    value: no
+    choices:
+    - yes
+    - no
+  submission_gdrive_uri: https://docs.google.com/spreadsheets/d/1bfwyZ50OxBgSHwJIz9o-7HXj4g3rikRSwmCtbyjrlVA/edit#gid=1443593376
+  submission_url_field: 4
+  submission_desc_field: 9
+  working_dir: contest_tmp
+bibliography: dashboard.bib
+resource_files:
+- contest_tmp/checkpoint.RData
+---
+```{r, setup, include=FALSE }
+### Setup 
+
+## Knit environment & parameters
+library(knitr)
+# options for this document
+GLOBALS <- params
+knitr::opts_chunk$set("message" = GLOBALS$debug)
+knitr::opts_chunk$set("warning" = GLOBALS$debug)
+knitr::opts_chunk$set("tidy" = FALSE) # already tidyed using stylr
+knitr::opts_chunk$set(autodep=TRUE)
+
+## Libraries
+library("tidyverse")
+library("readxl")
+library("haven")
+library("magrittr")
+library("gt")
+library("googledrive")
+library("httr")
+library("fs")
+library("shiny")
+library("DT")
+#library("ggplotify")
+#library("sf")
+library("ggspatial")
+
+## Dblient routines
+#TODO: Replace with library load when dbclient library is pushed to CRAN
+source("../R/dbclient.R")
+.onLoad()
+
+## Directories setup
+GLOBALS$plan_dir  <- fs::path(GLOBALS$working_dir,"plans")
+GLOBALS$checkpoint  <- fs::path(GLOBALS$working_dir,"checkpoint",ext="RData")
+
+
+
+if (params$clean_data) {
+  unlink(GLOBALS$working_dir, recursive=TRUE)
+} 
+
+if (!dir.exists(GLOBALS$working_dir)) {
+   dir.create(GLOBALS$working_dir)
+}
+
+if (!dir.exists(GLOBALS$plan_dir)) {
+   dir.create(GLOBALS$plan_dir)
+}
+
+```
+
+```{css css-setup, echo=FALSE}
+@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville&display=swap');
+body {
+  font-family: 'Libre Baskerville', serif;
+}
+img
+{
+    display:block; 
+    float:none; 
+    margin-left:auto;
+    margin-right:auto;
+    width:80%;
+    text-align:center;
+}
+.caption
+{
+    display:block; 
+    float:none; 
+    margin-left:auto;
+    margin-right:auto;
+    width:80%;
+    text-align:center;
+}
+aside {
+    float: right;
+    color: blue;
+}
+
+/* aside mod from tufte.css but remapped to aside element */
+
+aside {
+    float: right;
+    clear: right;
+    margin-right: -60%;
+    width: 50%;
+    margin-top: 0.3rem;
+    margin-bottom: 0;
+    font-size: 1.1rem;
+    line-height: 1.3;
+    vertical-align: baseline;
+    position: relative;
+}
+```
+```{r, refresh }
+### Refresh plan set 
+refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
+  # Update id list
+  tmpsubfile <- fs::path(params$working_dir,"submissions",ext="xlsx")
+  googledrive::drive_deauth()
+  googledrive::drive_download(
+    googledrive::as_id(params$submission_gdrive_uri),
+    path = tmpsubfile,
+    overwrite = TRUE
+  )
+  tmpxl <- readxl::read_excel(tmpsubfile)
+  contestPlans.tb <- tmpxl %>% select(GLOBALS$submission_url_field, GLOBALS$submission_desc_field) 
+  names(contestPlans.tb) <- c("url","description")
+  contestPlans.tb %<>% mutate( id = str_replace(url, ".*projects/(.*)$","\\1"))
+  contestPlans.tb %<>% group_by(id) %>% slice_tail(n=1) %>% ungroup() # deduplicate repeat submission
+  
+  # Retrieve new plan files
+  
+  tmpmeta <- db2meta(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
+  contestPlans.tb %<>% left_join(tmpmeta,by=c("id"="plan_id"))
+  contestPlans.sflist <- db2sf(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
+  
+  # Update plan scores
+  
+  contestScores.df <- map_dfr(contestPlans.sflist, function(x)
+    as.data.frame(x) %>% 
+      ungroup() %>% 
+      summarize(across(starts_with("properties"), ~ mean(.x, na.rm = TRUE),  .names = "{.col}_mn"))
+  )
+  names(contestScores.df) <-  str_replace(names(contestScores.df),"properties.","")
+  contestPlans.tb %<>% bind_cols(contestScores.df)
+  contestPlans.tb %<>% bind_cols(tibble(map=contestPlans.sflist))
+
+  
+  # Cleanup  & checkpoint
+  
+  save(contestPlans.tb, file=checkpoint)
+  
+} 
+
+if (GLOBALS$refresh_data) refresh_checkpoint()
+```
+
+
+```{r, load-checkpoint}
+load(GLOBALS$checkpoint)
+```
+
+
+
+# Scoreboard
+```{r, explore-plans}
+### Explore set of plans
+
+# Score table
+
+scoreTable.out <- contestPlans.tb %>% select(plan_name,plan_region,ends_with("_mn")) %>%
+  datatable(class = "cell-border stripe; hover", caption = "Plan Score",
+            editable=FALSE,
+            filter="top",  
+            extensions = list(
+                      "ColReorder" = list(TRUE),
+                      "Buttons" = NULL
+                      ),
+           options = list(
+                dom = 'BRrltpi',
+                autoWidth=TRUE,
+                pageLength=50,
+                scrollX=TRUE,
+                lengthMenu = list(c(10, 50, -1), c('10', '50', 'All')),
+                buttons =
+                  list(
+                    'copy',
+                    'print',
+                    list(
+                      extend = 'collection',
+                      buttons = c('csv', 'excel', 'pdf'),
+                      text = 'Download'
+                    ),
+                    I('colvis')
+                  )
+              )
+    )
+
+scoreTable.out
+
+```
+# Drill-Down
+```{r}
+planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
+selectInput("selected_plan", "Which plan", planlist )
+
+
+rmarkdown::render_delayed({
+  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
+  curMap <-  curPlan[[1,"map"]][[1]] 
+ renderTable({
+    curPlan %>% select(plan_name,plan_creator,description)
+ })
+ 
+   renderPlot({
+        curMap %>% ggplot() + geom_sf()
+    })
+
+})
+```

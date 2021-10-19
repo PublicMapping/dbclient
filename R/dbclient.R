@@ -6,6 +6,7 @@
 ## - Planscore API
 ## - Metadata extraction
 ## - Convert to geomander format
+## - Add Lstmod date to file name
 
 ## .onLoad
 ##
@@ -71,15 +72,6 @@ retrieve_uris <- function(projectid,
   uris
 }
 
-#' Retrieve plan information from districtbuilder
-#'
-#' @param projectid project identifier
-#' @param types type of formats to retrieve (details to all)
-#' @param dir destination directory
-#' @return number of files retrieved
-#' @examples
-#'
-#' retrieve_districtbuilder("ce81fcfb-8caf-49cf-b6ff-c4785a7ac679")
 download_districtbuilder_plans <- function (projectids, targetdir=".") {
   if (!dir.exists(targetdir)) {
     stop("Directory does not exist:",targetdir)
@@ -92,7 +84,7 @@ download_districtbuilder_plans <- function (projectids, targetdir=".") {
   gzip<-options()$dbclient.gzip
   clobber<-options()$dbclient.clobber
 
-  uris <- map_dfr(projectids,retrieve_uris)
+  uris <- purrr::map_dfr(projectids,retrieve_uris)
 
   download <- function(id,uri,ext) {
     if(verbose>2) print(paste("URI:",uri))
@@ -118,8 +110,8 @@ download_districtbuilder_plans <- function (projectids, targetdir=".") {
   }
 
   safe_download <- purrr::slowly( purrr::safely(
-       purrr::insistently(download, rate_backoff(max_times=retries)),
-      otherwise=523, quiet = TRUE), rate_delay(delay) )
+       purrr::insistently(download, purrr::rate_backoff(max_times=retries)),
+      otherwise=523, quiet = TRUE), purrr::rate_delay(delay) )
 
   safe_download_w<-function(id,uri,ext) {
     res <- safe_download(id,uri,ext)
@@ -129,7 +121,7 @@ download_districtbuilder_plans <- function (projectids, targetdir=".") {
       res$result
   }
 
-  rv<-pmap(uris,safe_download_w)
+  rv<-purrr::pmap(uris,safe_download_w)
 
   rv
 }
@@ -138,15 +130,33 @@ download_districtbuilder_plans <- function (projectids, targetdir=".") {
 ## Harvesting
 ##
 
-retrieve_plans<-function( targetdir=".", after="1900-01-01", start=1, pagesize=100) {
+#' Retrieve plan information from districtbuilder
+#'
+#' NOTE: Attempts to be sensible including: retrieving multiple formats and metadata,
+#'  compressing files with gzip, retrying on network errors, skipping files previously
+#'  retrieved successfully . These are configurable through options()$dbclient.* .
+#'
+#' @after collect plans updated after given date (for incremental updates)
+#' @param targetdir destination directory
+#' @return number of last page retrieved (for efficiency in restarting)
+#' @examples retrieve_plans( targetdir="tmp", after="2021-09-25")
+#'
+
+retrieve_plans<-function( targetdir=".", after="1900-01-01", start=1, pagesize=20) {
+
   page <- start
   earliestplan="2999-01-01"
   verbose<-options()$dbclient.verbose
 
   if (!dir.exists(targetdir)) {
     stop("Directory does not exist:",targetdir)
-    return(0)
   }
+
+  pagesize <- as.numeric(pagesize)
+    if ((pagesize < 2) || (pagesize>100)) {
+      warning("Invalid pagesize -- using default")
+      pagesize <- 20
+    }
 
   repeat{
     if(verbose>1) print(paste("page:", page, "after:", after))
@@ -195,8 +205,105 @@ retrieve_planlist<-function(page,pagesize) {
   return(res)
 }
 
-# TODO: File bugs
-#-- api should return 404 on malformed requests, not 200
+#' create metadata data frame for a set of districtbuilder plans
+#' Note: - this operates on a director of previously harvested files, and will retrieving additional from the districtbuilder app
+#' if the requested ids do not exist in the directory
+#'
+#'
+#'
+#' @param ids list of districtbuilder ids
+#' @param targetdir destination directory
+#' @examples db2meta( ids=c("32e5d326-02af-44a9-944b-e2add24d9613","530585f8-557f-4e60-a6af-0ac50d6df271","32d4da61-ef4f-4015-8d21-7f64ab895dbc"), targetdir="tmp", after="2021-09-25")
+#'
+
+
+db2meta <- function(ids, targetdir=".") {
+  if (!dir.exists(targetdir)) {
+    stop("Directory does not exist:",targetdir)
+  }
+
+  metaFiles <- fs::path(targetdir,ids,ext="json.gz")
+  missingIds <- ids[which(!file.exists(metaFiles))]
+  download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+
+  extractMetaJson <- function(f) {
+    if (!file.exists(f)) {return(list(file_src = f))}
+    tmpfield <- jsonlite::fromJSON(gzfile(f),flatten=TRUE)
+    list(
+      file_src = f,
+      plan_id = tmpfield$id,
+      plan_name = tmpfield$name,
+      plan_date = tmpfield$updatedDt,
+      plan_creator = tmpfield$user$name,
+      plan_creator_id = tmpfield$user$id,
+      plan_region = tmpfield$regionConfig$regionCode
+    )
+  }
+  purrr::map_dfr(metaFiles,extractMetaJson)
+}
+
+#' create sf objects for db plans
+#'
+#' Note: - this operates on a director of previously harvested files, and will retrieving additional from the districtbuilder app
+#' if the requested ids do not exist in the directory
+#'
+#'
+#'
+#' @param ids list of districtbuilder ids
+#' @param targetdir destination directory
+#' @examples db2meta( ids=c("32e5d326-02af-44a9-944b-e2add24d9613","530585f8-557f-4e60-a6af-0ac50d6df271","32d4da61-ef4f-4015-8d21-7f64ab895dbc"), targetdir="tmp", after="2021-09-25")
+#'
+db2sf <- function(ids,targetdir=".") {
+  metaFiles <- fs::path(targetdir,ids,ext="geojson.gz")
+  missingIds <- ids[which(!file.exists(metaFiles))]
+  download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+
+  convertGeojson <- function(f) {
+    if (!file.exists(f)) {return(NULL)}
+    jsonStr <- readr::read_file(f)
+    tstSf <- geojsonsf::geojson_sf(jsonStr)
+    flatFeatures <-  jsonlite::fromJSON(f,flatten=TRUE)[["features"]]
+    res <- bind_cols(
+      tstSf,
+      flatFeatures %>% select(id,starts_with("properties"))
+    )
+
+
+  }
+  purrr::map(metaFiles,convertGeojson)
+}
+
+db2geomander <- function (ids, targetdir, year=2020)
+{
+  if (!dir.exists(targetdir)) {
+    stop("Directory does not exist:",targetdir)
+  }
+
+  metaFiles <- fs::path(targetdir,ids,ext="csv.gz")
+  missingIds <- ids[which(!file.exists(metaFiles))]
+  download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+
+  convertBE <- function(f) {
+    if (!file.exists(f)) {return(NULL)}
+    tmp.tb <- readr::read_csv(f,col_types="ci")
+    tmp.tb <- dplyr::rename(tmp.tb,District=DISTRICT)
+    fipstate <- stringr::str_sub(tmp.tb[1,1],1,2)
+    shp <- tigris::blocks(fipstate,year=year)
+    shp <- dplyr::left_join(shp,tmp.tb, by = c(GEOID10 = "BLOCKID"))
+  }
+
+  purrr::map(metaFiles,convertBE)
+}
+
+
+# ISSUES: bugs on globalProects api
+#-- api should return 404 on bad path requests (e.g. /api//globalProjects), not 200
 #-- globalProjects api should include completed flag in metadata
 #-- page numbers shift as new plans are added -- need date range to stabilize
+#-- intermittent 504 errors
+#-- limit > 100 generates consistent 504
+
+# ISSUES: missing metadata
+# - json - missing plan level scores, chamber, completeness
+# - geojson - missing district level score in score panel - PVI, deviation; missing all evaluation, including county splits
 
