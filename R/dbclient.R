@@ -295,6 +295,124 @@ db2geomander <- function (ids, targetdir, year=2020)
   purrr::map(metaFiles,convertBE)
 }
 
+generate_planscore_df(ids, targetdir=".", apikey) {
+    if (!dir.exists(targetdir)) {
+      stop("Directory does not exist:",targetdir)
+      return(0)
+    }
+
+  # get db plan geojson
+  metaFiles <- fs::path(targetdir,ids,ext="geojson.gz")
+  missingIds <- ids[which(!file.exists(metaFiles))]
+  download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+
+  purrr::map_dfr(metaFiles,geo2planscore)
+}
+
+
+geo2planscore<-function(f="",apikey,to=60, continueURI = NULL ) {
+
+  if (is.null(continueURI)) {
+    # post part 1
+
+    r1<- httr::GET("https://api.planscore.org/upload",
+                   httr::add_headers(.headers=c(
+                     "Authorization" = paste(sep="","Bearer ", apikey)
+                   )),
+                   httr::timeout(to)
+    )
+
+    if (r1$status_code != 200) {
+      warning("PlanScore failed at stage 1 (possible bad api key): ", httr::content(r1) )
+      return(list(file=f))
+    }
+
+
+    # post part 2: S3 Bucket Upload
+    fgu <- R.utils::gunzip(f, temporary=TRUE, overwrite=TRUE, remove=FALSE)
+    uri2 <- httr::content(r1)[[1]]
+    headers2 <- httr::content(r1)[[2]]
+    upl <- httr::upload_file(fgu)
+
+    params <- headers2
+    params <- append(params,list("file"=upl))
+
+    r2 <- httr::POST(uri2,
+                     body =  params, # NOTE: fragile syntax for upl
+                     httr::timeout(to),
+                     encode="multipart"
+                     #httr::verbose()
+    )
+
+    # TODO: Response is 503 with URI should be 301, but redirect URI is included
+    #       Follow up
+
+    uri3 <- r2[1]$url
+
+    if (is.null(uri3))  {
+      warning("PlanScore failed at stage 1 (possible bad api key): ", httr::content(r2) )
+      return(list(file=f))
+    }
+
+    # post part 3: follow up
+
+
+    r3<- httr::POST(uri3,
+                    httr::add_headers(.headers=c(
+                      "Authorization" = paste(sep="","Bearer ", apikey),
+                      "Content-Type" = " application/json"
+                    )),
+                    body = '{"description": "dbclient upload"}',
+                    httr::timeout(to)
+
+    )
+
+    # Stage 4: poll reply
+
+    if (r3$status_code != 200) {
+      warning("PlanScore failed at stage 3, status: ", r3$status_code )
+      return(list(file=f))
+    }
+
+    uri4 <- httr::content(r3)$index_url
+
+  } else {
+    uri4=continueURI
+  }
+
+  #polling loop
+
+  getResultsOnce<- function(u) {
+    r<- httr::GET(u)
+    if (r$status_code!=200) stop("Bad http status", r$status_code)
+    res <- jsonlite::fromJSON(httr::content(r,encoding="UTF-8"),flatten=TRUE)
+    if (!res$status) stop("Bad planscore status")
+    if (res$progress[1]!=res$progress[2]) stop("Not finished")
+    res
+  }
+
+  getResults <-
+    purrr::possibly(
+      purrr::insistently(getResultsOnce,
+                         rate = purrr::rate_backoff(  pause_base = 10,  pause_cap = 120, max_times=8)
+      ),
+      otherwise=NULL
+    )
+
+  rval <- getResults(uri4)
+
+  if (is.null(rval)) {
+    warning("PlanScore failed at final stage of computing scores ", uri4 )
+    return(list(file=f,planscoreURI=uri4))
+
+  }
+
+  res <- dplyr::tibble(file=f,
+                       planscoreURI=uri4,dplyr::as_tibble(rval$summary),
+                       districts=list(rval$districts))
+
+  res
+}
 
 # ISSUES: bugs on globalProects api
 #-- api should return 404 on bad path requests (e.g. /api//globalProjects), not 200
@@ -306,4 +424,5 @@ db2geomander <- function (ids, targetdir, year=2020)
 # ISSUES: missing metadata
 # - json - missing plan level scores, chamber, completeness
 # - geojson - missing district level score in score panel - PVI, deviation; missing all evaluation, including county splits
+# -           - contiguity is reported as a string with arbitray labels, rather than as a logical or numeric
 

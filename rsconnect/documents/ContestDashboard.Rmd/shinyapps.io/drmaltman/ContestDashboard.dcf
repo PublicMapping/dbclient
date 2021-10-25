@@ -1,0 +1,15 @@
+name: ContestDashboard
+title: ContestDashboard
+username:
+account: drmaltman
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 4902233
+bundleId: 5152626
+url: https://drmaltman.shinyapps.io/ContestDashboard/
+when: 1634612673.77921
+lastSyncTime: 1634612673.77922
+asMultiple: TRUE
+asStatic: FALSE
+additionalFiles: contest_tmp/checkpoint.RData
+ignoredFiles: checkpoint|contest_tmp/plans/87e46459-08b6-49ba-ba33-b835d993e843.geojson.gz|testing.Rmd

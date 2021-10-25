@@ -38,7 +38,7 @@ params:
     choices:
     - yes
     - no
-  submission_gdrive_uri: https://docs.google.com/spreadsheets/d/1bfwyZ50OxBgSHwJIz9o-7HXj4g3rikRSwmCtbyjrlVA/edit#gid=1443593376
+  submission_gdrive_uri: https://docs.google.com/spreadsheets/d/1bfwyZ50OxBgSHwJIz9o-7HXj4g3rikRSwmCtbyjrlVA/
   submission_url_field: 4
   submission_desc_field: 9
   working_dir: contest_tmp
