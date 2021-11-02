@@ -81,6 +81,8 @@ download_districtbuilder_plans <- function (projectids, targetdir=".") {
     return(0)
   }
 
+
+
   retries<-options()$dbclient.retries
   delay<-options()$dbclient.delay
   verbose<-options()$dbclient.verbose
@@ -91,22 +93,26 @@ download_districtbuilder_plans <- function (projectids, targetdir=".") {
   uris <- purrr::map_dfr(projectids,retrieve_uris)
 
   download <- function(id,uri,ext) {
-    if(verbose>2) print(paste("URI:",uri))
+    if(verbose>2) print(paste("download",id,ext))
 
     targetfile <- fs::path(targetdir,id,ext=ext)
     if (!clobber) {
       cltarget <- targetfile
       if(gzip) {cltarget<-paste(sep="",targetfile,".gz")}
       if (file.exists(cltarget)) {
-          if(verbose>2) print(paste("CACHED:",uri))
+          if(verbose>2) print(paste("CACHED:",id,ext))
           return(200)
       }
     }
+    if(verbose>1) print(paste("download - fetching",id,ext,uri))
+
     req <- curl::curl_fetch_disk(uri, targetfile)
     rv <- req$status_code
 
     if (rv!=200) {
       file.remove(targetfile)
+      if(verbose>1) print(paste("download - fetching failuer",id,ext,uri,status))
+
     }  else {
       if (gzip) R.utils::gzip(targetfile)
     }
@@ -221,14 +227,16 @@ retrieve_planlist<-function(page,pagesize) {
 #'
 
 
-db2meta <- function(ids, targetdir=".") {
+db2meta <- function(ids, targetdir=".", retrieve=TRUE) {
   if (!dir.exists(targetdir)) {
     stop("Directory does not exist:",targetdir)
   }
 
   metaFiles <- fs::path(targetdir,ids,ext="json.gz")
   missingIds <- ids[which(!file.exists(metaFiles))]
-  download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+  if (retrieve) {
+     download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+  }
 
   extractMetaJson <- function(f) {
     if (!file.exists(f)) {return(list(file_src = f))}
@@ -257,12 +265,19 @@ db2meta <- function(ids, targetdir=".") {
 #' @param targetdir destination directory
 #' @examples db2meta( ids=c("32e5d326-02af-44a9-944b-e2add24d9613","530585f8-557f-4e60-a6af-0ac50d6df271","32d4da61-ef4f-4015-8d21-7f64ab895dbc"), targetdir="tmp", after="2021-09-25")
 #'
-db2sf <- function(ids,targetdir=".") {
+db2sf <- function(ids,targetdir=".", retrieve=TRUE) {
   metaFiles <- fs::path(targetdir,ids,ext="geojson.gz")
   missingIds <- ids[which(!file.exists(metaFiles))]
-  download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+  if (retrieve) {
+    download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+  }
+  verbose<-options()$dbclient.verbose
+
 
   convertGeojson <- function(f) {
+    if (verbose>1) {
+      print(paste("geojson conversion",f))
+    }
     if (!file.exists(f)) {return(NULL)}
     jsonStr <- readr::read_file(f)
     tstSf <- geojsonsf::geojson_sf(jsonStr)

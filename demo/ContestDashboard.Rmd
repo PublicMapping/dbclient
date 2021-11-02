@@ -41,12 +41,14 @@ params:
   submission_gdrive_uri: https://docs.google.com/spreadsheets/d/1bfwyZ50OxBgSHwJIz9o-7HXj4g3rikRSwmCtbyjrlVA/
   submission_url_field: 4
   submission_desc_field: 9
+  apikey: ""
   working_dir: contest_tmp
 bibliography: dashboard.bib
 resource_files:
 - contest_tmp/checkpoint.RData
 ---
-```{r, setup, include=FALSE }
+
+```{r setup, include=FALSE }
 ### Setup 
 
 ## Knit environment & parameters
@@ -75,7 +77,7 @@ library("ggspatial")
 
 ## Dblient routines
 #TODO: Replace with library load when dbclient library is pushed to CRAN
-source("../R/dbclient.R")
+source("")
 .onLoad()
 
 ## Directories setup
@@ -141,6 +143,7 @@ aside {
     position: relative;
 }
 ```
+
 ```{r, refresh }
 ### Refresh plan set 
 refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
@@ -160,20 +163,32 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
   
   # Retrieve new plan files
   
-  tmpmeta <- db2meta(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
-  contestPlans.tb %<>% left_join(tmpmeta,by=c("id"="plan_id"))
-  contestPlans.sflist <- db2sf(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
+  tmpmeta <- db2meta(contestPlans.tb$id,targetdir=GLOBALS$plan_dir, retrieve=FALSE)
+  contestPlans.tb %<>% inner_join(tmpmeta,by=c("id"="plan_id")) # this drops plans that weren't retreiveable
+  contestPlans.sflist <- db2sf(contestPlans.tb$id,targetdir=GLOBALS$plan_dir, retrieve=FALSE)
   
   # Update plan scores
   
   contestScores.df <- map_dfr(contestPlans.sflist, function(x)
     as.data.frame(x) %>% 
       ungroup() %>% 
+      mutate(properties.contiguity = properties.contiguity=="contiguous") %>%
       summarize(across(starts_with("properties"), ~ mean(.x, na.rm = TRUE),  .names = "{.col}_mn"))
   )
   names(contestScores.df) <-  str_replace(names(contestScores.df),"properties.","")
   contestPlans.tb %<>% bind_cols(contestScores.df)
   contestPlans.tb %<>% bind_cols(tibble(map=contestPlans.sflist))
+  
+  if (params$apikey!="" & options()$dbclient.pscore.apikey =="") {
+        options("dbclient.pscore.apikey"=apikey)
+  }
+  
+  if (options()$dbclient.pscore.apikey !="") {
+      #TODO: Add planscore
+      tmpplanscore.df  <- generate_planscore_df(contestPlans.tb$id, targetdir=GLOBALS$plan_dir)
+      contestPlans.tb %<>% left_join(tmpplanscore.df,by=c("id"="id"))
+  }    
+    
 
   
   # Cleanup  & checkpoint
@@ -183,20 +198,23 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
 } 
 
 if (GLOBALS$refresh_data) refresh_checkpoint()
+options(dbclient.pscore.apikey = "DfqELj2K")
+debug(refresh_checkpoint)
+refresh_checkpoint()
 ```
-
 
 ```{r, load-checkpoint}
 load(GLOBALS$checkpoint)
 ```
 
-
-
 # Scoreboard
+
 ```{r, explore-plans}
 ### Explore set of plans
 
 # Score table
+
+#TODO: add planscore
 
 scoreTable.out <- contestPlans.tb %>% select(plan_name,plan_region,ends_with("_mn")) %>%
   datatable(class = "cell-border stripe; hover", caption = "Plan Score",
@@ -229,8 +247,12 @@ scoreTable.out <- contestPlans.tb %>% select(plan_name,plan_region,ends_with("_m
 scoreTable.out
 
 ```
+
 # Drill-Down
-```{r}
+
+```{r, drill-down}
+
+#TODO: display description of plan, display district scores
 planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
 selectInput("selected_plan", "Which plan", planlist )
 
@@ -247,4 +269,10 @@ rmarkdown::render_delayed({
     })
 
 })
+```
+
+# Compare plans
+
+```{r, compare-plans}
+
 ```
