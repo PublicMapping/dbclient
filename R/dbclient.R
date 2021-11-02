@@ -295,7 +295,7 @@ db2geomander <- function (ids, targetdir, year=2020)
   purrr::map(metaFiles,convertBE)
 }
 
-generate_planscore_df(ids, targetdir=".", apikey) {
+generate_planscore_df<-function(ids, targetdir=".", apikey) {
     if (!dir.exists(targetdir)) {
       stop("Directory does not exist:",targetdir)
       return(0)
@@ -306,13 +306,20 @@ generate_planscore_df(ids, targetdir=".", apikey) {
   missingIds <- ids[which(!file.exists(metaFiles))]
   download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
 
-  purrr::map_dfr(metaFiles,geo2planscore)
+  purrr::map_dfr(metaFiles,geo2planscore,apikey=apikey,targetdir=targetdir)
 }
 
 
-geo2planscore<-function(f="",apikey,to=60, continueURI = NULL ) {
+geo2planscore<-function(f,apikey,to=60, targetdir=".", forceURI=FALSE ) {
 
-  if (is.null(continueURI)) {
+  id = stringr::str_replace(basename(f),"(.*?)\\.(.*)","\\1")
+  pfile = fs::path(targetdir,id,ext="pscore.json")
+  urifile = fs::path(targetdir,id,ext="pscore.uri")
+  continueURI <- NULL
+
+  if (file.exists(urifile) & !forceURI) {
+    continueURI <- scan(urifile,what=character())
+  } else {
     # post part 1
 
     r1<- httr::GET("https://api.planscore.org/upload",
@@ -375,19 +382,29 @@ geo2planscore<-function(f="",apikey,to=60, continueURI = NULL ) {
     }
 
     uri4 <- httr::content(r3)$index_url
+    write(uri4,file=urifile)
 
-  } else {
-    uri4=continueURI
   }
 
   #polling loop
 
   getResultsOnce<- function(u) {
-    r<- httr::GET(u)
-    if (r$status_code!=200) stop("Bad http status", r$status_code)
-    res <- jsonlite::fromJSON(httr::content(r,encoding="UTF-8"),flatten=TRUE)
-    if (!res$status) stop("Bad planscore status")
-    if (res$progress[1]!=res$progress[2]) stop("Not finished")
+    if (file.exists(pfile)) {
+      res <- jsonlite::fromJSON(pfile,flatten=TRUE)
+    } else {
+      r<- httr::GET(u, httr::write_disk(pfile))
+      if (r$status_code!=200) stop("Bad http status", r$status_code)
+      res <- jsonlite::fromJSON(httr::content(r,encoding="UTF-8"),flatten=TRUE)
+      if (!res$status){
+        file.remove(pfile)
+        stop("Bad planscore status")
+      }
+    }
+
+    if (res$progress[1]!=res$progress[2]) {
+        file.remove(pfile)
+        stop("Not finished")
+    }
     res
   }
 
@@ -399,7 +416,8 @@ geo2planscore<-function(f="",apikey,to=60, continueURI = NULL ) {
       otherwise=NULL
     )
 
-  rval <- getResults(uri4)
+    rval <- getResults(uri4)
+
 
   if (is.null(rval)) {
     warning("PlanScore failed at final stage of computing scores ", uri4 )
@@ -407,9 +425,9 @@ geo2planscore<-function(f="",apikey,to=60, continueURI = NULL ) {
 
   }
 
-  res <- dplyr::tibble(file=f,
+  res <- dplyr::tibble(id=id,
                        planscoreURI=uri4,dplyr::as_tibble(rval$summary),
-                       districts=list(rval$districts))
+                       districtScoreTable=list(rval$districts))
 
   res
 }
