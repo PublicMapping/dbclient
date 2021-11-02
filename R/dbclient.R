@@ -16,6 +16,8 @@
 ##
 
 .onLoad <- function(libname, pkgname) {
+  #TODO: Implement gzip - false detection throughout, currently we
+  # default & assume gzipped files
   op <- options()
   op.new <- list(
     dbclient.server = "https://app.districtbuilder.org",
@@ -23,7 +25,8 @@
     dbclient.delay = 2,
     dbclient.verbose = 2,
     dbclient.clobber = FALSE,
-    dbclient.gzip = TRUE
+   # dbclient.gzip = TRUE,
+    dbclient.pscore.apikey = ""
 
   )
   toset <- !(names(op.new) %in% names(op))
@@ -81,7 +84,8 @@ download_districtbuilder_plans <- function (projectids, targetdir=".") {
   retries<-options()$dbclient.retries
   delay<-options()$dbclient.delay
   verbose<-options()$dbclient.verbose
-  gzip<-options()$dbclient.gzip
+ # gzip<-options()$dbclient.gzip
+  gzip <- TRUE
   clobber<-options()$dbclient.clobber
 
   uris <- purrr::map_dfr(projectids,retrieve_uris)
@@ -295,7 +299,11 @@ db2geomander <- function (ids, targetdir, year=2020)
   purrr::map(metaFiles,convertBE)
 }
 
-generate_planscore_df<-function(ids, targetdir=".", apikey) {
+generate_planscore_df<-function(ids, targetdir=".") {
+  apikey = options()$dbclient.pscore.apikey
+  if (is.null(apikey) || apikey=="") {
+    stop("Requires planscore api key to be set: options(dbclient.pscore.apikey=KEY).")
+  }
     if (!dir.exists(targetdir)) {
       stop("Directory does not exist:",targetdir)
       return(0)
@@ -316,11 +324,22 @@ geo2planscore<-function(f,apikey,to=60, targetdir=".", forceURI=FALSE ) {
   pfile = fs::path(targetdir,id,ext="pscore.json")
   urifile = fs::path(targetdir,id,ext="pscore.uri")
   continueURI <- NULL
+  verbose<-options()$dbclient.verbose
+
+  if (verbose>1) {
+    print(paste("geo2planscore","starting",id))
+  }
 
   if (file.exists(urifile) & !forceURI) {
-    continueURI <- scan(urifile,what=character())
+    continueURI <- scan(urifile,what=character(),quiet=TRUE)
+    if (verbose>1) {
+      print(paste("geo2planscore","continuing",id,continueURI))
+    }
   } else {
     # post part 1
+    if (verbose>1) {
+      print(paste("geo2planscore","stage 1",id, continueURI))
+    }
 
     r1<- httr::GET("https://api.planscore.org/upload",
                    httr::add_headers(.headers=c(
@@ -330,12 +349,18 @@ geo2planscore<-function(f,apikey,to=60, targetdir=".", forceURI=FALSE ) {
     )
 
     if (r1$status_code != 200) {
+      if (verbose>0) {
+        print(paste("geo2planscore","stage 1 failed",id,r1$status_code))
+      }
       warning("PlanScore failed at stage 1 (possible bad api key): ", httr::content(r1) )
       return(list(file=f))
     }
 
 
     # post part 2: S3 Bucket Upload
+    if (verbose>1) {
+      print(paste("geo2planscore","stage 2",id))
+    }
     fgu <- R.utils::gunzip(f, temporary=TRUE, overwrite=TRUE, remove=FALSE)
     uri2 <- httr::content(r1)[[1]]
     headers2 <- httr::content(r1)[[2]]
@@ -357,12 +382,18 @@ geo2planscore<-function(f,apikey,to=60, targetdir=".", forceURI=FALSE ) {
     uri3 <- r2[1]$url
 
     if (is.null(uri3))  {
-      warning("PlanScore failed at stage 1 (possible bad api key): ", httr::content(r2) )
+      if (verbose>0) {
+        print(paste("geo2planscore","stage 2 failed",id,r2$status_code))
+      }
+      warning("PlanScore failed at stage 2 (possible bad api key): ", httr::content(r2) )
       return(list(file=f))
     }
 
     # post part 3: follow up
 
+    if (verbose>1) {
+      print(paste("geo2planscore","stage 3",id))
+    }
 
     r3<- httr::POST(uri3,
                     httr::add_headers(.headers=c(
@@ -374,36 +405,58 @@ geo2planscore<-function(f,apikey,to=60, targetdir=".", forceURI=FALSE ) {
 
     )
 
-    # Stage 4: poll reply
 
     if (r3$status_code != 200) {
+      if (verbose>0) {
+        print(paste("geo2planscore","stage 3 failed",id,r3$status_code))
+      }
       warning("PlanScore failed at stage 3, status: ", r3$status_code )
       return(list(file=f))
     }
 
-    uri4 <- httr::content(r3)$index_url
-    write(uri4,file=urifile)
+    continueURI <- httr::content(r3)$index_url
+    write(continueURI,file=urifile)
 
   }
 
-  #polling loop
+# Stage 4: poll reply
+if (verbose>1) {
+  print(paste("geo2planscore","stage 4",id))
+}
+
+## setup polling robust retry function
 
   getResultsOnce<- function(u) {
+    if (verbose>1) {
+      print(paste("geo2planscore","stage 4 trying",id))
+    }
     if (file.exists(pfile)) {
+      if (verbose>1) {
+        print(paste("geo2planscore","stage 4 cached",id,pfile))
+      }
       res <- jsonlite::fromJSON(pfile,flatten=TRUE)
     } else {
+      if (verbose>1) {
+        print(paste("geo2planscore","stage 4 polling",id,u))
+      }
       r<- httr::GET(u, httr::write_disk(pfile))
       if (r$status_code!=200) stop("Bad http status", r$status_code)
       res <- jsonlite::fromJSON(httr::content(r,encoding="UTF-8"),flatten=TRUE)
-      if (!res$status){
+      if (is.null(res$status) || !res$status){
+        if (verbose>1) {
+          print(paste("geo2planscore","stage 4 bad request",id,res$status))
+        }
         file.remove(pfile)
         stop("Bad planscore status")
       }
     }
 
-    if (res$progress[1]!=res$progress[2]) {
+    if (length(res$progress) < 2 || res$progress[1]!=res$progress[2]) {
         file.remove(pfile)
-        stop("Not finished")
+      if (verbose>1) {
+        print(paste("geo2planscore","stage 4, not finished",id,res$progess,collapse="-"))
+      }
+      stop("Not finished")
     }
     res
   }
@@ -411,22 +464,28 @@ geo2planscore<-function(f,apikey,to=60, targetdir=".", forceURI=FALSE ) {
   getResults <-
     purrr::possibly(
       purrr::insistently(getResultsOnce,
-                         rate = purrr::rate_backoff(  pause_base = 10,  pause_cap = 120, max_times=8)
+                         rate = purrr::rate_backoff(  pause_base = 10,  pause_cap = 120, max_times=8),
+                         quiet=verbose<3
       ),
-      otherwise=NULL
+      otherwise=NULL,
+      quiet= verbose<3
     )
 
-    rval <- getResults(uri4)
+
+    rval <- getResults(continueURI)
 
 
   if (is.null(rval)) {
-    warning("PlanScore failed at final stage of computing scores ", uri4 )
-    return(list(file=f,planscoreURI=uri4))
+    warning("PlanScore failed at final stage of computing scores ", id )
+    if (verbose>1) {
+      print(paste("geo2planscore","stage 4 failed all tries",id))
+    }
+    return(list(file=f,planscoreURI=continueURI))
 
   }
 
   res <- dplyr::tibble(id=id,
-                       planscoreURI=uri4,dplyr::as_tibble(rval$summary),
+                       planscoreURI=continueURI,dplyr::as_tibble(rval$summary),
                        districtScoreTable=list(rval$districts))
 
   res
