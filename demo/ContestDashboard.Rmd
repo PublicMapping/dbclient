@@ -42,10 +42,11 @@ params:
   submission_url_field: 4
   submission_desc_field: 9
   apikey: ""
-  working_dir: ../contest_tmp
+  working_dir: contest_tmp
 bibliography: dashboard.bib
 resource_files:
-- ../contest_tmp/checkpoint.RData
+- contest_tmp/checkpoint.RData
+- dbclient.R
 ---
 
 ```{r setup, include=FALSE }
@@ -140,7 +141,7 @@ aside {
 ## Dblient routines
 #TODO: Replace with library load when dbclient library is pushed to CRAN
 try(silent=TRUE, {source("../R/dbclient.R")})
-try(silent=TRUE, {source("R/dbclient.R")})
+try(silent=TRUE, {source("dbclient.R")})
 .onLoad()
 ```
 
@@ -324,7 +325,7 @@ rmarkdown::render_delayed({
   
   presTB <- bind_rows(compTb,pdiff)
   pname <- c(curPlan$plan_name,compPlan$plan_name,"Difference")
-  presTB <- bind_cols(pname,presTB)
+  presTB <- bind_cols(planname=pname,presTB)
    renderTable({
      presTB
     })
