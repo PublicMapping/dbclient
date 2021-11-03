@@ -42,10 +42,10 @@ params:
   submission_url_field: 4
   submission_desc_field: 9
   apikey: ""
-  working_dir: contest_tmp
+  working_dir: ../contest_tmp
 bibliography: dashboard.bib
 resource_files:
-- contest_tmp/checkpoint.RData
+- ../contest_tmp/checkpoint.RData
 ---
 
 ```{r setup, include=FALSE }
@@ -75,16 +75,9 @@ library("DT")
 #library("sf")
 library("ggspatial")
 
-## Dblient routines
-#TODO: Replace with library load when dbclient library is pushed to CRAN
-source("")
-.onLoad()
-
 ## Directories setup
 GLOBALS$plan_dir  <- fs::path(GLOBALS$working_dir,"plans")
 GLOBALS$checkpoint  <- fs::path(GLOBALS$working_dir,"checkpoint",ext="RData")
-
-
 
 if (params$clean_data) {
   unlink(GLOBALS$working_dir, recursive=TRUE)
@@ -97,7 +90,6 @@ if (!dir.exists(GLOBALS$working_dir)) {
 if (!dir.exists(GLOBALS$plan_dir)) {
    dir.create(GLOBALS$plan_dir)
 }
-
 ```
 
 ```{css css-setup, echo=FALSE}
@@ -144,6 +136,14 @@ aside {
 }
 ```
 
+```{r, load-dbclient}
+## Dblient routines
+#TODO: Replace with library load when dbclient library is pushed to CRAN
+try(silent=TRUE, {source("../R/dbclient.R")})
+try(silent=TRUE, {source("R/dbclient.R")})
+.onLoad()
+```
+
 ```{r, refresh }
 ### Refresh plan set 
 refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
@@ -163,9 +163,9 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
   
   # Retrieve new plan files
   
-  tmpmeta <- db2meta(contestPlans.tb$id,targetdir=GLOBALS$plan_dir, retrieve=FALSE)
+  tmpmeta <- db2meta(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
   contestPlans.tb %<>% inner_join(tmpmeta,by=c("id"="plan_id")) # this drops plans that weren't retreiveable
-  contestPlans.sflist <- db2sf(contestPlans.tb$id,targetdir=GLOBALS$plan_dir, retrieve=FALSE)
+  contestPlans.sflist <- db2sf(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
   
   # Update plan scores
   
@@ -189,7 +189,6 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
       contestPlans.tb %<>% left_join(tmpplanscore.df,by=c("id"="id"))
   }    
     
-
   
   # Cleanup  & checkpoint
   
@@ -198,9 +197,6 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
 } 
 
 if (GLOBALS$refresh_data) refresh_checkpoint()
-options(dbclient.pscore.apikey = "DfqELj2K")
-debug(refresh_checkpoint)
-refresh_checkpoint()
 ```
 
 ```{r, load-checkpoint}
@@ -216,7 +212,10 @@ load(GLOBALS$checkpoint)
 
 #TODO: add planscore
 
-scoreTable.out <- contestPlans.tb %>% select(plan_name,plan_region,ends_with("_mn")) %>%
+scoreTable.out <- contestPlans.tb %>% 
+  #select(plan_name,plan_region,ends_with("_mn"))
+  select(-map,-districtScoreTable,-file_src,-file,-planscoreURI) %>%
+  mutate(description = str_trunc(str_flatten(str_squish(description)),100)) %>%
   datatable(class = "cell-border stripe; hover", caption = "Plan Score",
             editable=FALSE,
             filter="top",  
@@ -227,7 +226,7 @@ scoreTable.out <- contestPlans.tb %>% select(plan_name,plan_region,ends_with("_m
            options = list(
                 dom = 'BRrltpi',
                 autoWidth=TRUE,
-                pageLength=50,
+                pageLength=10,
                 scrollX=TRUE,
                 lengthMenu = list(c(10, 50, -1), c('10', '50', 'All')),
                 buttons =
@@ -242,7 +241,22 @@ scoreTable.out <- contestPlans.tb %>% select(plan_name,plan_region,ends_with("_m
                     I('colvis')
                   )
               )
-    )
+    ) %>% 
+   formatStyle('description',
+               height='10px',
+               width='40px',
+               maxHeight='15px',
+               overflow='hidden',
+               textOverflow='ellipsis',
+               backgroundColor='lightblue') %>%
+ formatStyle('url',
+               height='10px',
+               width='10px',
+               maxHeight='15px',
+               overflow='hidden',
+               textOverflow='ellipsis',
+               backgroundColor='lightblue') 
+
 
 scoreTable.out
 
@@ -260,13 +274,38 @@ selectInput("selected_plan", "Which plan", planlist )
 rmarkdown::render_delayed({
   curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
   curMap <-  curPlan[[1,"map"]][[1]] 
- renderTable({
-    curPlan %>% select(plan_name,plan_creator,description)
- })
- 
    renderPlot({
         curMap %>% ggplot() + geom_sf()
     })
+
+})
+
+rmarkdown::render_delayed({  
+  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
+
+  renderTable({
+    curPlan %>% select(plan_name,plan_creator,description)
+  })
+})
+  
+rmarkdown::render_delayed({  
+  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
+  curMap <-  curPlan[[1,"map"]][[1]] 
+
+  renderTable({
+    curMap %>% as.data.frame() %>% select(id,starts_with("properties"))
+ })
+})
+
+
+ rmarkdown::render_delayed({  
+  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
+  curPS <- curPlan[[1,"districtScoreTable"]][[1]]
+
+  renderTable({
+    curPS
+ })
+
 
 })
 ```
@@ -274,5 +313,22 @@ rmarkdown::render_delayed({
 # Compare plans
 
 ```{r, compare-plans}
+selectInput("comparison_plan", "Which plan", planlist )
+
+rmarkdown::render_delayed({
+  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
+  compPlan <- contestPlans.tb %>% filter(id==input$comparison_plan)
+  
+  compTb <- bind_rows(curPlan,compPlan)  %>% select(where(is.numeric))
+  pdiff<- apply(compTb,2,function(x)(x[1]-x[2]))  
+  
+  presTB <- bind_rows(compTb,pdiff)
+  pname <- c(curPlan$plan_name,compPlan$plan_name,"Difference")
+  presTB <- bind_cols(pname,presTB)
+   renderTable({
+     presTB
+    })
+
+})
 
 ```
