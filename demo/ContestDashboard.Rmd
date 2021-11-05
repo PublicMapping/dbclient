@@ -84,6 +84,8 @@ GLOBALS$checkpoint  <- fs::path(GLOBALS$working_dir,"checkpoint",ext="RData")
 
 if (params$clean_data) {
   unlink(GLOBALS$working_dir, recursive=TRUE)
+  dir.create(GLOBALS$working_dir)
+   dir.create(GLOBALS$plan_dir)
 } 
 
 
@@ -117,6 +119,7 @@ aside {
     color: blue;
 }
 
+
 /* aside mod from tufte.css but remapped to aside element */
 
 aside {
@@ -131,6 +134,10 @@ aside {
     vertical-align: baseline;
     position: relative;
 }
+
+/*fix for DT scrolling and header alignment*/
+.dataTables_wrapper{ overflow-x: auto; clear:both; }
+
 ```
 
 ```{r, load-dbclient}
@@ -146,13 +153,7 @@ try(silent=TRUE, {source("dbclient.R")})
 ### Refresh plan set 
 refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
   
-  if (!dir.exists(GLOBALS$working_dir)) {
-   dir.create(GLOBALS$working_dir)
-}
-
-if (!dir.exists(GLOBALS$plan_dir)) {
-   dir.create(GLOBALS$plan_dir)
-}
+ 
   
   # Update id list
   tmpsubfile <- fs::path(params$working_dir,"submissions",ext="xlsx")
@@ -180,6 +181,7 @@ if (!dir.exists(GLOBALS$plan_dir)) {
     as.data.frame(x) %>% 
       ungroup() %>% 
       mutate(properties.contiguity = properties.contiguity=="contiguous") %>%
+      filter(id>0) %>%
       summarize(across(starts_with("properties"), ~ mean(.x, na.rm = TRUE),  .names = "{.col}_mn"))
   )
   names(contestScores.df) <-  str_replace(names(contestScores.df),"properties.","")
@@ -230,14 +232,14 @@ tmpsplits.tib<-map_dfr(contestPlans.tb$id, function(x) {
 contestPlans.tb %<>% bind_cols(tmpsplits.tib) 
 
 
-contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,majMin_n,county_split_count,county_split_count)
+contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,contiguity_mn,majMin_n,county_split_count,county_split_count)
 
 
 # Add Planscores  
   if (options()$dbclient.pscore.apikey !="") {
       tmpplanscore.df  <- generate_planscore_df(contestPlans.tb$id, targetdir=GLOBALS$plan_dir)
       contestPlans.tb %<>% left_join(tmpplanscore.df,by=c("id"="id"))
-      contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,majMin_n,county_split_count,county_split_count,`Efficiency Gap`,`Partisan Bias`)
+      contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,contiguity_mn,majMin_n,county_split_count,county_split_count,`Efficiency Gap`,`Partisan Bias`)
 
   }    
     
@@ -252,6 +254,7 @@ contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_popu
 } 
 
 if (GLOBALS$refresh_data) refresh_checkpoint()
+
 ```
 
 ```{r, load-checkpoint}
@@ -268,24 +271,28 @@ thematic_shiny()
 
 
  contestPlans.tb %>% 
-  select(-map,-districtScoreTable,-file_src,-file,-planscoreURI,-description) %>%
+  select(-map,-districtScoreTable,-file_src,-planscoreURI,-description) %>%
+   relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,contiguity_mn,majMin_n,county_split_count,county_split_sum) %>%
+
   #mutate(description = str_trunc(str_flatten(str_squish(description)),100)) %>%
   mutate(url=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) %>%
-  datatable(class = "cell-border stripe; hover", caption = "Plan Score",
+  datatable(class = "cell-border stripe; hover; .scrolledTable", caption = "",
+            width="100%",
             editable=FALSE,
             escape=FALSE,
-            width=1000,
             selection="none",
             filter="top",  
+            rownames=FALSE,
             extensions = list(
                       "ColReorder" = list(TRUE),
                       "Buttons" = NULL
                       ),
            options = list(
                 dom = 'RrltpBi',
-                autoWidth=TRUE,
+                autoWidth=FALSE,
+                bAutoWidth=FALSE,
                 pageLength=5,
-                scrollX=TRUE,
+                scrollX=FALSE,
                 lengthMenu = list(c(5, 50, -1), c('5', '20', 'All')),
                 buttons =
                   list(
@@ -296,7 +303,7 @@ thematic_shiny()
                       buttons = c('csv', 'excel', 'pdf'),
                       text = 'Download'
                     ),
-                    I('colvis')
+                   I('colvis')
                   )
               )
     )  %>% 
@@ -307,6 +314,10 @@ thematic_shiny()
   formatStyle(
     'unassigned_population',
      backgroundColor = styleEqual(c(TRUE), c('lightpink') )
+  ) %>%
+  formatStyle(
+    'contiguity_mn',
+     backgroundColor = styleEqual(c(1), c('lightgreen'),default='orange' )
   )
 # %>% 
 #    formatStyle('description',
