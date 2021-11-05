@@ -292,7 +292,7 @@ db2sf <- function(ids,targetdir=".", retrieve=TRUE) {
   purrr::map(metaFiles,convertGeojson)
 }
 
-db2geomander <- function (ids, targetdir, year=2020)
+db2df <- function (ids, targetdir, retrieve=TRUE)
 {
   if (!dir.exists(targetdir)) {
     stop("Directory does not exist:",targetdir)
@@ -300,7 +300,30 @@ db2geomander <- function (ids, targetdir, year=2020)
 
   metaFiles <- fs::path(targetdir,ids,ext="csv.gz")
   missingIds <- ids[which(!file.exists(metaFiles))]
-  download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+  if (retrieve) {
+    download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+  }
+
+  convertBE <- function(f) {
+    if (!file.exists(f)) {return(NULL)}
+    tmp.tb <- readr::read_csv(f,col_types="ci")
+  }
+
+  purrr::map(metaFiles,convertBE)
+}
+
+#TODO: Refactor to call db2df
+db2geomander <- function (ids, targetdir, year=2020, retrieve=TRUE)
+{
+  if (!dir.exists(targetdir)) {
+    stop("Directory does not exist:",targetdir)
+  }
+
+  metaFiles <- fs::path(targetdir,ids,ext="csv.gz")
+  missingIds <- ids[which(!file.exists(metaFiles))]
+  if (retrieve) {
+     download_districtbuilder_plans(projectids = missingIds,targetdir = targetdir)
+  }
 
   convertBE <- function(f) {
     if (!file.exists(f)) {return(NULL)}

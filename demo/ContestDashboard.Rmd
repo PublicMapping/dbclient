@@ -75,6 +75,8 @@ library("DT")
 #library("ggplotify")
 #library("sf")
 library("ggspatial")
+library("bslib")
+library("thematic")
 
 ## Directories setup
 GLOBALS$plan_dir  <- fs::path(GLOBALS$working_dir,"plans")
@@ -84,13 +86,7 @@ if (params$clean_data) {
   unlink(GLOBALS$working_dir, recursive=TRUE)
 } 
 
-if (!dir.exists(GLOBALS$working_dir)) {
-   dir.create(GLOBALS$working_dir)
-}
 
-if (!dir.exists(GLOBALS$plan_dir)) {
-   dir.create(GLOBALS$plan_dir)
-}
 ```
 
 ```{css css-setup, echo=FALSE}
@@ -141,6 +137,7 @@ aside {
 ## Dblient routines
 #TODO: Replace with library load when dbclient library is pushed to CRAN
 try(silent=TRUE, {source("../R/dbclient.R")})
+try(silent=TRUE, {source("./R/dbclient.R")})
 try(silent=TRUE, {source("dbclient.R")})
 .onLoad()
 ```
@@ -148,6 +145,15 @@ try(silent=TRUE, {source("dbclient.R")})
 ```{r, refresh }
 ### Refresh plan set 
 refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
+  
+  if (!dir.exists(GLOBALS$working_dir)) {
+   dir.create(GLOBALS$working_dir)
+}
+
+if (!dir.exists(GLOBALS$plan_dir)) {
+   dir.create(GLOBALS$plan_dir)
+}
+  
   # Update id list
   tmpsubfile <- fs::path(params$working_dir,"submissions",ext="xlsx")
   googledrive::drive_deauth()
@@ -184,12 +190,60 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
         options("dbclient.pscore.apikey"=apikey)
   }
   
+  # add unassigned score -- detect incomplete districts
+  
+  unassigned.tb<-contestPlans.tb %>% rowwise() %>% transmute(head= map %>% as.data.frame() %>% slice_head(n=1)) %>%unpack(head)
+
+unassigned_scores.tb <- unassigned.tb %>% rowwise() %>% transmute(
+  unassigned_geography=(length(geometry[[1]])>0),
+  unassigned_population= sum(c_across(starts_with("properties.demographics")) > 0 ,na.rm=TRUE)>0
+           )
+
+contestPlans.tb %<>% bind_cols(unassigned_scores.tb) 
+
+# compute  maj-min district scores -- these are missing in score results
+majmin.tb <- contestPlans.tb %>% 
+  select("id","map") %>% rename(planid=id) %>%
+  unnest(map) %>%
+  select(planid,id,starts_with("properties.demographics")) %>%
+  filter(id>0) %>% 
+  rowwise() %>% 
+  mutate(percent_white = properties.demographics.white / properties.demographics.population,
+         is_maj_min_district = percent_white <.5)  %>%
+  group_by(planid) %>% 
+  summarize(majMin_n=sum(is_maj_min_district),numdists=n()) %>% 
+  ungroup() %>%
+  rename(id=planid)
+
+contestPlans.tb %<>% left_join(majmin.tb) 
+
+tmpsplits.tib<-map_dfr(contestPlans.tb$id, function(x) {
+  tmpblocks.tb <- db2df(x,targetdir = GLOBALS$plan_dir)[[1]]
+  tmpblocks.tb %>%
+    mutate(county=str_sub(BLOCKID,3,5)) %>%
+    group_by(county) %>% 
+    summarize(splits=length(unique(DISTRICT))-1) %>%
+    ungroup() %>%
+    summarise(county_split_count = sum(splits>0), county_split_sum=sum(splits))
+})
+
+contestPlans.tb %<>% bind_cols(tmpsplits.tib) 
+
+
+contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,majMin_n,county_split_count,county_split_count)
+
+
+# Add Planscores  
   if (options()$dbclient.pscore.apikey !="") {
-      #TODO: Add planscore
       tmpplanscore.df  <- generate_planscore_df(contestPlans.tb$id, targetdir=GLOBALS$plan_dir)
       contestPlans.tb %<>% left_join(tmpplanscore.df,by=c("id"="id"))
+      contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,majMin_n,county_split_count,county_split_count,`Efficiency Gap`,`Partisan Bias`)
+
   }    
     
+
+
+
   
   # Cleanup  & checkpoint
   
@@ -204,32 +258,35 @@ if (GLOBALS$refresh_data) refresh_checkpoint()
 load(GLOBALS$checkpoint)
 ```
 
-# Scoreboard
+# Scores
 
 ```{r, explore-plans}
 ### Explore set of plans
 
 # Score table
+thematic_shiny()
 
-#TODO: add planscore
 
-scoreTable.out <- contestPlans.tb %>% 
-  #select(plan_name,plan_region,ends_with("_mn"))
-  select(-map,-districtScoreTable,-file_src,-file,-planscoreURI) %>%
-  mutate(description = str_trunc(str_flatten(str_squish(description)),100)) %>%
+ contestPlans.tb %>% 
+  select(-map,-districtScoreTable,-file_src,-file,-planscoreURI,-description) %>%
+  #mutate(description = str_trunc(str_flatten(str_squish(description)),100)) %>%
+  mutate(url=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) %>%
   datatable(class = "cell-border stripe; hover", caption = "Plan Score",
             editable=FALSE,
+            escape=FALSE,
+            width=1000,
+            selection="none",
             filter="top",  
             extensions = list(
                       "ColReorder" = list(TRUE),
                       "Buttons" = NULL
                       ),
            options = list(
-                dom = 'BRrltpi',
+                dom = 'RrltpBi',
                 autoWidth=TRUE,
-                pageLength=10,
+                pageLength=5,
                 scrollX=TRUE,
-                lengthMenu = list(c(10, 50, -1), c('10', '50', 'All')),
+                lengthMenu = list(c(5, 50, -1), c('5', '20', 'All')),
                 buttons =
                   list(
                     'copy',
@@ -242,34 +299,40 @@ scoreTable.out <- contestPlans.tb %>%
                     I('colvis')
                   )
               )
-    ) %>% 
-   formatStyle('description',
-               height='10px',
-               width='40px',
-               maxHeight='15px',
-               overflow='hidden',
-               textOverflow='ellipsis',
-               backgroundColor='lightblue') %>%
- formatStyle('url',
-               height='10px',
-               width='10px',
-               maxHeight='15px',
-               overflow='hidden',
-               textOverflow='ellipsis',
-               backgroundColor='lightblue') 
-
-
-scoreTable.out
+    )  %>% 
+ formatStyle(
+    'unassigned_geography',
+     backgroundColor = styleEqual(c(TRUE), c('lightpink') )
+  ) %>%
+  formatStyle(
+    'unassigned_population',
+     backgroundColor = styleEqual(c(TRUE), c('lightpink') )
+  )
+# %>% 
+#    formatStyle('description',
+#                height='10px',
+#                width='40px',
+#                maxHeight='15px',
+#                #overflow='hidden',
+#                textOverflow='ellipsis',
+#                backgroundColor='lightblue')
+# %>%
+#  formatStyle('url',
+#                height='10px',
+#               # width='10px',
+#                maxHeight='15px',
+#                overflow='hidden',
+#                textOverflow='ellipsis',
+#                backgroundColor='lightblue') 
 
 ```
 
-# Drill-Down
+# District-Level Details
 
 ```{r, drill-down}
 
-#TODO: display description of plan, display district scores
 planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
-selectInput("selected_plan", "Which plan", planlist )
+selectInput("selected_plan", "Which plan", planlist, selected= )
 
 
 rmarkdown::render_delayed({
@@ -311,10 +374,24 @@ rmarkdown::render_delayed({
 })
 ```
 
-# Compare plans
+# Compare to Another Plans
 
 ```{r, compare-plans}
 selectInput("comparison_plan", "Which plan", planlist )
+
+rmarkdown::render_delayed({
+  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
+  curMap <-  curPlan[[1,"map"]][[1]] 
+    compPlan <- contestPlans.tb %>% filter(id==input$comparison_plan)
+  compMap <-  compPlan[[1,"map"]][[1]] 
+
+   renderPlot({
+        curMap %>% ggplot() + geom_sf(color=curPlan$plan_name)+
+       geom_sf(data=compMap,aes(color=compPlan$plan_name,alpha=0)) +
+                 guides(alpha="none")
+    })
+
+})
 
 rmarkdown::render_delayed({
   curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
@@ -327,9 +404,18 @@ rmarkdown::render_delayed({
   pname <- c(curPlan$plan_name,compPlan$plan_name,"Difference")
   presTB <- bind_cols(planname=pname,presTB)
    renderTable({
-     presTB
+     presTB  %>%
+      rownames_to_column() %>%  
+      mutate(across(everything(),as.character)) %>%
+      pivot_longer(-rowname) %>% 
+      pivot_wider(names_from=rowname, values_from=value) 
     })
 
 })
+
+
+
+# theme = bs_theme(version = 4, bootswatch = "minty")
+
 
 ```
