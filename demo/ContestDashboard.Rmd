@@ -12,15 +12,15 @@ output:
   html_document:
     toc: yes
     toc_depth: 1
+    #toc_float:
+    #  collapsed: false
+    #smooth_scroll: false
     number_section: yes
-    theme: journal
     highlight: zenburn
     code_folding: hide
     includes:
       in_header: header.html
-    toc_float:
-      collapsed: yes
-      smooth_scroll: yes
+
 runtime: shiny
 params:
   refresh_data:
@@ -93,6 +93,9 @@ if (params$clean_data) {
 
 ```{css css-setup, echo=FALSE}
 @import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville&display=swap');
+div.main-container {
+  max-width: 1600px !important;
+}
 body {
   font-family: 'Libre Baskerville', serif;
 }
@@ -152,8 +155,6 @@ try(silent=TRUE, {source("dbclient.R")})
 ```{r, refresh }
 ### Refresh plan set 
 refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
-  
- 
   
   # Update id list
   tmpsubfile <- fs::path(params$working_dir,"submissions",ext="xlsx")
@@ -242,10 +243,6 @@ contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_popu
       contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,contiguity_mn,majMin_n,county_split_count,county_split_count,`Efficiency Gap`,`Partisan Bias`)
 
   }    
-    
-
-
-
   
   # Cleanup  & checkpoint
   
@@ -265,17 +262,20 @@ load(GLOBALS$checkpoint)
 
 ```{r, explore-plans}
 ### Explore set of plans
+contestPlans.tb %<>% 
+  mutate(psView = str_replace( planscoreURI, 
+      ".*/(.*)/index.json","https://planscore.campaignlegal.org/plan.html?\\1"),
+        psView=paste("<a href='",psView,"' target='_ps'>",psView,"</a>",sep=""),
+        dbView=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) 
 
 # Score table
 thematic_shiny()
 
-
  contestPlans.tb %>% 
   select(-map,-districtScoreTable,-file_src,-planscoreURI,-description) %>%
-   relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,contiguity_mn,majMin_n,county_split_count,county_split_sum) %>%
+   relocate(plan_name,unassigned_geography,unassigned_population,numdists,contiguity_mn,majMin_n,county_split_count,county_split_sum,dbView,psView) %>%
 
   #mutate(description = str_trunc(str_flatten(str_squish(description)),100)) %>%
-  mutate(url=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) %>%
   datatable(class = "cell-border stripe; hover; .scrolledTable", caption = "",
             width="100%",
             editable=FALSE,
@@ -288,7 +288,7 @@ thematic_shiny()
                       "Buttons" = NULL
                       ),
            options = list(
-                dom = 'RrltpBi',
+                dom = 'RrlBtpi',
                 autoWidth=FALSE,
                 bAutoWidth=FALSE,
                 pageLength=5,
@@ -343,39 +343,43 @@ thematic_shiny()
 ```{r, drill-down}
 
 planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
-selectInput("selected_plan", "Which plan", planlist, selected= )
+selectInput("selected_plan", "Which plan", planlist )
+
+reactTmp <- reactive(paste("Hello Sailor: ",input$selected_plan))
+curPlan <- reactive(contestPlans.tb %>% filter(id==input$selected_plan))
+curMap <-  reactive(curPlan()[[1,"map"]][[1]])
+
 
 
 rmarkdown::render_delayed({
-  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
-  curMap <-  curPlan[[1,"map"]][[1]] 
    renderPlot({
-        curMap %>% ggplot() + geom_sf()
+        curMap() %>% ggplot() + geom_sf()
     })
-
 })
 
 rmarkdown::render_delayed({  
-  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
-
   renderTable({
-    curPlan %>% select(plan_name,plan_creator,description)
+    curPlan() %>% select(plan_name,plan_creator,description) 
   })
+})
+
+
+rmarkdown::render_delayed({  
+  renderTable({
+    curPlan() %>% rename("Districtbuilder"=dbView,"Planscore"=psView) %>% select(Districtbuilder,Planscore) 
+  }, sanitize.text.function = function(x) x)
 })
   
 rmarkdown::render_delayed({  
-  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
-  curMap <-  curPlan[[1,"map"]][[1]] 
 
   renderTable({
-    curMap %>% as.data.frame() %>% select(id,starts_with("properties"))
+    curMap() %>% as.data.frame() %>% select(id,starts_with("properties"))
  })
 })
 
 
  rmarkdown::render_delayed({  
-  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
-  curPS <- curPlan[[1,"districtScoreTable"]][[1]]
+  curPS <- curPlan()[[1,"districtScoreTable"]][[1]]
 
   renderTable({
     curPS
@@ -391,13 +395,15 @@ rmarkdown::render_delayed({
 selectInput("comparison_plan", "Which plan", planlist )
 
 rmarkdown::render_delayed({
-  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
-  curMap <-  curPlan[[1,"map"]][[1]] 
-    compPlan <- contestPlans.tb %>% filter(id==input$comparison_plan)
-  compMap <-  compPlan[[1,"map"]][[1]] 
+
+  compPlan <- contestPlans.tb %>% filter(id==input$comparison_plan)
+  compMap <-  compPlan[[1,"map"]][[1]]
+  ccolor <- curPlan()$plan_name # NOTE: Workaround to lazy eval
 
    renderPlot({
-        curMap %>% ggplot() + geom_sf(color=curPlan$plan_name)+
+      curMap() %>% 
+       ggplot(aes(color= {{ ccolor }})) +
+       geom_sf()+
        geom_sf(data=compMap,aes(color=compPlan$plan_name,alpha=0)) +
                  guides(alpha="none")
     })
@@ -405,14 +411,13 @@ rmarkdown::render_delayed({
 })
 
 rmarkdown::render_delayed({
-  curPlan <- contestPlans.tb %>% filter(id==input$selected_plan)
   compPlan <- contestPlans.tb %>% filter(id==input$comparison_plan)
   
-  compTb <- bind_rows(curPlan,compPlan)  %>% select(where(is.numeric))
+  compTb <- bind_rows(curPlan(),compPlan)  %>% select(where(is.numeric))
   pdiff<- apply(compTb,2,function(x)(x[1]-x[2]))  
   
   presTB <- bind_rows(compTb,pdiff)
-  pname <- c(curPlan$plan_name,compPlan$plan_name,"Difference")
+  pname <- c(curPlan()$plan_name,compPlan$plan_name,"Difference")
   presTB <- bind_cols(planname=pname,presTB)
    renderTable({
      presTB  %>%
