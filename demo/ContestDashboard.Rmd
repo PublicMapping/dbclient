@@ -74,8 +74,12 @@ library("shiny")
 library("shinyjs")
 library("DT")
 #library("ggplotify")
+library("patchwork")
+library(manipulateWidget)
+
 #library("sf")
 library("ggspatial")
+library("plotly")
 library("bslib")
 library("thematic")
 
@@ -257,17 +261,98 @@ if (GLOBALS$refresh_data) refresh_checkpoint()
 
 ```{r, load-checkpoint}
 load(GLOBALS$checkpoint)
+
+# convenience columns
+contestPlans.tb %<>% 
+  mutate(psViewURI = str_replace( planscoreURI, 
+      ".*/(.*)/index.json","https://planscore.campaignlegal.org/plan.html?\\1"),
+        psView=paste("<a href='",psViewURI,"' target='_ps'>",psViewURI,"</a>",sep=""),
+        dbView=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) 
+```
+
+# Explore Scores
+
+```{r, explore-scores}
+
+scores.tb <- contestPlans.tb %>%
+  select(`id`, `plan_name`, `unassigned_geography`, `unassigned_population`, `numdists`,
+         `plan_region`, `compactness_mn`, `contiguity_mn`, `county_split_sum`,
+         `Partisan Bias`, `Efficiency Gap`,`majMin_n`) 
+
+scoreVars <-setdiff( names(which(sapply(scores.tb,is.numeric))), c("numdists"))
+scoreRegions <- unique(scores.tb$plan_region)
+
+
+  shinyApp(
+  ui <- fluidPage(
+    sidebarLayout(
+      sidebarPanel(
+        selectInput("crit_1", "First Criteria", scoreVars),
+        selectInput("crit_2", "Second Criteria", scoreVars), # TODO: dynamically remove first criteria
+        selectInput("region", "regions", scoreRegions),
+        checkboxInput("filterLegal", "Legal Plans Only", value = TRUE)
+      ),
+      mainPanel(
+          tabsetPanel(type = "tabs",
+            tabPanel("Score Tradeoffs ", plotlyOutput("Tradeoffs")),
+            tabPanel("Score Distributions", plotOutput("Distributions")) # TODO: Stacking Plotly output in Shiny
+        )
+      )
+    )
+  ),
+  server <- function(input, output) {
+    
+    # Reactive expressions
+    filtered.tb <- reactive({ 
+         if (input$filterLegal) {
+           scores.tb %>% filter(unassigned_geography==FALSE, 
+                                unassigned_geography == FALSE,
+                                plan_region==input$region)
+         } else {
+           scores.tb %>% filter(plan_region==input$region)
+         }
+      })
+    
+    output$Tradeoffs <- renderPlotly({
+        p1 <- filtered.tb() %>% 
+          ggplot(aes(x=.data[[input$crit_1]], y= .data[[input$crit_2]],  label=plan_name)) +
+          geom_point() + 
+          geom_text(aes(alpha=.0001,size=1,lineheight=0)) +
+          facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
+          coord_flip() +
+          labs(size="",alpha="")
+        
+        ggplotly(p1)
+    })
+    
+    output$Distributions <- renderPlot({
+        p1 <- filtered.tb() %>% 
+          ggplot(aes(y=.data[[input$crit_1]])) +  # NOTE: .data workaround for tidy evaluation in shiny context
+          geom_histogram() + 
+          facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
+          coord_flip() +
+          labs(x="") 
+       p2 <- filtered.tb() %>% 
+          ggplot(aes(y=.data[[input$crit_2]])) +
+          geom_histogram() + 
+          facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
+          coord_flip() +
+          labs(x="") 
+
+        
+        pt <- p1 / p2
+        pt
+    })
+    
+  }
+)
+
 ```
 
 # All Plans
 
 ```{r, explore-plans}
 ### Explore set of plans
-contestPlans.tb %<>% 
-  mutate(psViewURI = str_replace( planscoreURI, 
-      ".*/(.*)/index.json","https://planscore.campaignlegal.org/plan.html?\\1"),
-        psView=paste("<a href='",psViewURI,"' target='_ps'>",psViewURI,"</a>",sep=""),
-        dbView=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) 
 
 pscore.tb <- reactive(contestPlans.tb %>% select(-map, -districtScoreTable))
 
@@ -343,31 +428,21 @@ renderDT({
 
 planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
 
-## TODO: add db open buttons
-# rmarkdown::render_delayed({  
-#   renderTable({
-#     curPlan() %>% rename("Districtbuilder"=dbView,"Planscore"=psView) %>% select(Districtbuilder,Planscore) 
-#   }, sanitize.text.function = function(x) x)
-# })
-
 shinyApp(
   ui <- fluidPage(
     useShinyjs(),
     
-    # App title ----
     #titlePanel("District Details & Comparison"),
     
-    # Sidebar layout with input and output definitions ----
     sidebarLayout(
       
-      # Sidebar panel for inputs ----
       sidebarPanel(
         selectInput("selected_plan", "Primary plan", planlist),
         actionButton('btn_d','Open in DistrictBuilder'),
         actionButton('btn_p','Open in Plan Score'),
         tags$br(),
         tags$hr(),
-        selectInput("comparison_plan", "Comparison plan", planlist),
+        selectInput("comparison_plan", "Comparison plan", planlist), # TODO: dynamically remove primary plan
         # withTags({
         #   br()
         #   div(class="header", checked=NA,
@@ -377,10 +452,8 @@ shinyApp(
     
       ),
       
-      # Main panel for displaying outputs ----
       mainPanel(
         
-        # Output: Tabset w/ plot, summary, and table ----
         tabsetPanel(type = "tabs",
                     tabPanel("Plan Map", plotOutput("map")),
                     tabPanel("Plan Overview", tableOutput("overview")),
