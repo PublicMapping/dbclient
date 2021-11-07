@@ -75,7 +75,7 @@ library("shinyjs")
 library("DT")
 #library("ggplotify")
 library("patchwork")
-library(manipulateWidget)
+#library(manipulateWidget)
 
 #library("sf")
 library("ggspatial")
@@ -148,7 +148,7 @@ aside {
 
 ```
 
-```{r, load-dbclient}
+```{r load-dbclient}
 ## Dblient routines
 #TODO: Replace with library load when dbclient library is pushed to CRAN
 try(silent=TRUE, {source("../R/dbclient.R")})
@@ -157,7 +157,7 @@ try(silent=TRUE, {source("dbclient.R")})
 .onLoad()
 ```
 
-```{r, refresh }
+```{r refresh }
 ### Refresh plan set 
 refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
   
@@ -259,7 +259,7 @@ if (GLOBALS$refresh_data) refresh_checkpoint()
 
 ```
 
-```{r, load-checkpoint}
+```{r load-checkpoint}
 load(GLOBALS$checkpoint)
 
 # convenience columns
@@ -272,7 +272,7 @@ contestPlans.tb %<>%
 
 # Explore Scores
 
-```{r, explore-scores}
+```{r explore-scores}
 
 scores.tb <- contestPlans.tb %>%
   select(`id`, `plan_name`, `unassigned_geography`, `unassigned_population`, `numdists`,
@@ -283,75 +283,118 @@ scoreVars <-setdiff( names(which(sapply(scores.tb,is.numeric))), c("numdists"))
 scoreRegions <- unique(scores.tb$plan_region)
 
 
-  shinyApp(
-  ui <- fluidPage(
-    sidebarLayout(
-      sidebarPanel(
-        selectInput("crit_1", "First Criteria", scoreVars),
-        selectInput("crit_2", "Second Criteria", scoreVars), # TODO: dynamically remove first criteria
-        selectInput("region", "regions", scoreRegions),
-        checkboxInput("filterLegal", "Legal Plans Only", value = TRUE)
-      ),
-      mainPanel(
-          tabsetPanel(type = "tabs",
-            tabPanel("Score Tradeoffs ", plotlyOutput("Tradeoffs")),
-            tabPanel("Score Distributions", plotOutput("Distributions")) # TODO: Stacking Plotly output in Shiny
-        )
-      )
-    )
-  ),
-  server <- function(input, output) {
-    
-    # Reactive expressions
-    filtered.tb <- reactive({ 
-         if (input$filterLegal) {
-           scores.tb %>% filter(unassigned_geography==FALSE, 
-                                unassigned_geography == FALSE,
-                                plan_region==input$region)
-         } else {
-           scores.tb %>% filter(plan_region==input$region)
-         }
-      })
-    
-    output$Tradeoffs <- renderPlotly({
-        p1 <- filtered.tb() %>% 
-          ggplot(aes(x=.data[[input$crit_1]], y= .data[[input$crit_2]],  label=plan_name)) +
-          geom_point() + 
-          geom_text(aes(alpha=.0001,size=1,lineheight=0)) +
-          facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
-          coord_flip() +
-          labs(size="",alpha="")
-        
-        ggplotly(p1)
-    })
-    
-    output$Distributions <- renderPlot({
-        p1 <- filtered.tb() %>% 
-          ggplot(aes(y=.data[[input$crit_1]])) +  # NOTE: .data workaround for tidy evaluation in shiny context
-          geom_histogram() + 
-          facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
-          coord_flip() +
-          labs(x="") 
-       p2 <- filtered.tb() %>% 
-          ggplot(aes(y=.data[[input$crit_2]])) +
-          geom_histogram() + 
-          facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
-          coord_flip() +
-          labs(x="") 
 
-        
-        pt <- p1 / p2
-        pt
-    })
-    
-  }
+shinyApp( enableBookmarking = "url",
+          ui = function(request) { 
+            fluidPage(
+              sidebarLayout(
+                sidebarPanel(
+                  selectInput("crit_1", "First Criteria", scoreVars),
+                  selectInput("crit_2", "Second Criteria", tail(scoreVars,-1)), # TODO: dynamically remove first criteria
+                  selectInput("region", "regions", scoreRegions),
+                  checkboxInput("filterLegal", "Legal Plans Only", value = TRUE),
+                  #   br(),
+                  #    bookmarkButton()  # TODO: Debug bookmarking in notebooks see: https://github.com/rstudio/shiny/pull/1209#issuecomment-227207713 
+                  
+                ),
+                mainPanel(
+                  tabsetPanel(type = "tabs",
+                              tabPanel("Score Tradeoffs ", plotlyOutput("Tradeoffs"),textOutput("Selection")),
+                              tabPanel("Score Distributions", plotOutput("Distributions")) # TODO: Stacking Plotly output in Shiny
+                  ),
+                  
+                )
+              )
+            )
+          },
+          server = function(input, output, session) {
+            # update criteria pulldown 2 
+            observe({
+              x <- input$crit_1
+              
+              y <- setdiff(scoreVars,x)
+              
+              # Can also set the label and select items
+              updateSelectInput(session, "crit_2",
+                                choices = y,
+                                selected = head(y, 1)
+              )
+            })
+            
+            # Bookmarking
+            observe({
+              # Trigger this observer every time an input changes
+              reactiveValuesToList(input)
+              session$doBookmark()
+            })
+            onBookmarked(function(url) {
+              updateQueryString(url)
+            })
+            
+            # update current table based on selected regions
+            filtered.tb <- reactive({ 
+              if (input$filterLegal) {
+                scores.tb %>% filter(unassigned_geography==FALSE, 
+                                     unassigned_geography == FALSE,
+                                     plan_region==input$region)
+              } else {
+                scores.tb %>% filter(plan_region==input$region)
+              }
+            })
+            
+            
+            output$Tradeoffs <- renderPlotly({
+              p1 <- filtered.tb() %>% 
+                ggplot(aes(x=.data[[input$crit_1]], y= .data[[input$crit_2]],  label=plan_name)) +
+                geom_point() +               
+                geom_smooth(aes(alpha=.01)) +
+                geom_text(aes(alpha=.01)) +
+                facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
+                coord_flip() +
+                labs(size="",alpha="")
+              
+              ggplotly(p1,source="trade")
+            })
+            
+            output$Selection <- renderText({
+              # if there is no click data, render nothing!
+              pldata <- event_data("plotly_selected", source = "trade")
+              if (is.null(pldata)) return(NULL)
+              
+              # Obtain the clicked x/y variables and fit linear model
+              paste(pldata,names(pldata))
+            })
+            
+            output$Distributions <- renderPlot({
+              p1 <- filtered.tb() %>% 
+                ggplot(aes(y=.data[[input$crit_1]])) +  # NOTE: .data workaround for tidy evaluation in shiny context
+                geom_histogram() + 
+                geom_density(aes(alpha=.5)) +
+                facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
+                coord_flip() +
+                labs(x="",alpha="") 
+              p2 <- filtered.tb() %>% 
+                ggplot(aes(y=.data[[input$crit_2]])) +
+                geom_histogram() + 
+                geom_density(aes(alpha=.5)) +
+                facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
+                coord_flip() +
+                labs(x="",alpha="") 
+              
+              
+              # TODO: test using plotly subplots instead of patchwork: https://plotly.com/r/subplots/
+              pt <- p1 / p2
+              pt
+            })
+            
+          }
 )
 
 ```
 
 # All Plans
 
-```{r, explore-plans}
+```{r explore-plans}
 ### Explore set of plans
 
 pscore.tb <- reactive(contestPlans.tb %>% select(-map, -districtScoreTable))
@@ -424,7 +467,7 @@ renderDT({
 
 # Details
 
-```{r, drill-down-tabbed}
+```{r drill-down}
 
 planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
 
@@ -440,9 +483,14 @@ shinyApp(
         selectInput("selected_plan", "Primary plan", planlist),
         actionButton('btn_d','Open in DistrictBuilder'),
         actionButton('btn_p','Open in Plan Score'),
-        tags$br(),
-        tags$hr(),
-        selectInput("comparison_plan", "Comparison plan", planlist), # TODO: dynamically remove primary plan
+        withTags({
+          br()
+          hr()
+        }),
+        conditionalPanel(
+          condition = "input.tabs == 'comparison'",
+          selectInput("comparison_plan", "Comparison plan", tail(planlist,-1)),
+        ),
         # withTags({
         #   br()
         #   div(class="header", checked=NA,
@@ -454,19 +502,31 @@ shinyApp(
       
       mainPanel(
         
-        tabsetPanel(type = "tabs",
-                    tabPanel("Plan Map", plotOutput("map")),
-                    tabPanel("Plan Overview", tableOutput("overview")),
-                    tabPanel("Plan Districts", DTOutput("details")),
-                    tabPanel("Map Comparison",plotOutput("compareMap")),
-                    tabPanel("Score Comparison", tableOutput("compareTable"))
+        tabsetPanel(type = "tabs", id="tabs",
+                    tabPanel(value="single", "Plan Map", plotOutput("map")),
+                    tabPanel(value="single", "Plan Overview", tableOutput("overview")),
+                    tabPanel(value="single", "Plan Districts", DTOutput("details")),
+                    tabPanel(value="comparison", "Map Comparison", plotOutput("compareMap")),
+                    tabPanel(value="comparison", "Score Comparison", tableOutput("compareTable"))
         )
       )
     )
   ),
-  server <- function(input, output) {
+  server <- function(input, output,session) {
     
-    # Reactive expressions
+    # update criteria pulldown 2 
+    observe({
+      x <- input$selected_plan
+      
+      y <- planlist[which(planlist!=x)] #NOTE: setdiff removes names from list... avoid
+      
+      updateSelectInput(session, "comparison_plan",
+                        choices = y,
+                        selected = head(y, 1)
+      )
+    })
+    
+    # precompute for efficiency across tabs
     curPlan <- reactive(contestPlans.tb %>% filter(id==input$selected_plan))
     curMap <-  reactive(curPlan()[[1,"map"]][[1]])
     compPlan <- reactive({contestPlans.tb %>% filter(id==input$comparison_plan)})
@@ -483,8 +543,6 @@ shinyApp(
     # button handler
     onclick("btn_p", runjs(paste(sep="", "window.open('", curPlan()["psViewURI"], "')"))) 
     onclick("btn_d", runjs(paste(sep="", "window.open('", curPlan()["url"], "')"))) 
-
-
     
     output$map <- renderPlot({
       curMap() %>% ggplot() + geom_sf()
