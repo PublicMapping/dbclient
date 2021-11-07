@@ -71,6 +71,7 @@ library("googledrive")
 library("httr")
 library("fs")
 library("shiny")
+library("shinyjs")
 library("DT")
 #library("ggplotify")
 #library("sf")
@@ -258,14 +259,14 @@ if (GLOBALS$refresh_data) refresh_checkpoint()
 load(GLOBALS$checkpoint)
 ```
 
-# Scores
+# All Plans
 
 ```{r, explore-plans}
 ### Explore set of plans
 contestPlans.tb %<>% 
-  mutate(psView = str_replace( planscoreURI, 
+  mutate(psViewURI = str_replace( planscoreURI, 
       ".*/(.*)/index.json","https://planscore.campaignlegal.org/plan.html?\\1"),
-        psView=paste("<a href='",psView,"' target='_ps'>",psView,"</a>",sep=""),
+        psView=paste("<a href='",psViewURI,"' target='_ps'>",psViewURI,"</a>",sep=""),
         dbView=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) 
 
 pscore.tb <- reactive(contestPlans.tb %>% select(-map, -districtScoreTable))
@@ -351,6 +352,7 @@ planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
 
 shinyApp(
   ui <- fluidPage(
+    useShinyjs(),
     
     # App title ----
     #titlePanel("District Details & Comparison"),
@@ -361,7 +363,18 @@ shinyApp(
       # Sidebar panel for inputs ----
       sidebarPanel(
         selectInput("selected_plan", "Primary plan", planlist),
-        selectInput("comparison_plan", "Comparison plan", planlist)
+        actionButton('btn_d','Open in DistrictBuilder'),
+        actionButton('btn_p','Open in Plan Score'),
+        tags$br(),
+        tags$hr(),
+        selectInput("comparison_plan", "Comparison plan", planlist),
+        # withTags({
+        #   br()
+        #   div(class="header", checked=NA,
+        #       a(href="",target="_db","See plan in DistrictBuilder")
+        #   )
+        # })
+    
       ),
       
       # Main panel for displaying outputs ----
@@ -386,13 +399,19 @@ shinyApp(
     compPlan <- reactive({contestPlans.tb %>% filter(id==input$comparison_plan)})
     compMap <-  reactive(compPlan()[[1,"map"]][[1]])
     
-    
+  
     #TODO: error presentation is a hack -- should figure out how to change output type...
     curPS <-   reactive({
       out <- curPlan()[[1,"districtScoreTable"]][[1]]
       if (is.null(out)) {out = tibble(warning="SCORES MISSING (Plan may be incomplete or corrupt)")}
       out
     }) 
+    
+    # button handler
+    onclick("btn_p", runjs(paste(sep="", "window.open('", curPlan()["psViewURI"], "')"))) 
+    onclick("btn_d", runjs(paste(sep="", "window.open('", curPlan()["url"], "')"))) 
+
+
     
     output$map <- renderPlot({
       curMap() %>% ggplot() + geom_sf()
