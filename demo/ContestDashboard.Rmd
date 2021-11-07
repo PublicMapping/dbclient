@@ -299,8 +299,10 @@ shinyApp( enableBookmarking = "url",
                 ),
                 mainPanel(
                   tabsetPanel(type = "tabs",
-                              tabPanel("Score Tradeoffs ", plotlyOutput("Tradeoffs"),textOutput("Selection")),
-                              tabPanel("Score Distributions", plotOutput("Distributions")) # TODO: Stacking Plotly output in Shiny
+                              tabPanel("Score Tradeoffs ", plotlyOutput("Tradeoffs") #,
+                                       #textOutput("Selection") # TODO: send selection to other panels
+                                       ),
+                              tabPanel("Score Distributions", plotOutput("Distributions")) 
                   ),
                   
                 )
