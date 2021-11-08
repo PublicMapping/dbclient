@@ -79,6 +79,7 @@ library("patchwork")
 
 #library("sf")
 library("ggspatial")
+library("leaflet")
 library("plotly")
 library("bslib")
 library("thematic")
@@ -93,7 +94,7 @@ if (params$clean_data) {
    dir.create(GLOBALS$plan_dir)
 } 
 
-
+thematic_shiny()
 ```
 
 ```{css css-setup, echo=FALSE}
@@ -176,13 +177,11 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
   contestPlans.tb %<>% group_by(id) %>% slice_tail(n=1) %>% ungroup() # deduplicate repeat submission
   
   # Retrieve new plan files
-  
   tmpmeta <- db2meta(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
   contestPlans.tb %<>% inner_join(tmpmeta,by=c("id"="plan_id")) # this drops plans that weren't retreiveable
   contestPlans.sflist <- db2sf(contestPlans.tb$id,targetdir=GLOBALS$plan_dir)
   
   # Update plan scores
-  
   contestScores.df <- map_dfr(contestPlans.sflist, function(x)
     as.data.frame(x) %>% 
       ungroup() %>% 
@@ -199,8 +198,12 @@ refresh_checkpoint <- function(checkpoint=GLOBALS$checkpoint) {
   }
   
   # add unassigned score -- detect incomplete districts
-  
-  unassigned.tb<-contestPlans.tb %>% rowwise() %>% transmute(head= map %>% as.data.frame() %>% slice_head(n=1)) %>%unpack(head)
+  unassigned.tb <- contestPlans.tb %>%
+    rowwise() %>%
+    transmute(head= map %>% 
+    as.data.frame() %>% 
+    slice_head(n=1)) %>%
+    unpack(head)
 
 unassigned_scores.tb <- unassigned.tb %>% rowwise() %>% transmute(
   unassigned_geography=(length(geometry[[1]])>0),
@@ -237,9 +240,7 @@ tmpsplits.tib<-map_dfr(contestPlans.tb$id, function(x) {
 
 contestPlans.tb %<>% bind_cols(tmpsplits.tib) 
 
-
 contestPlans.tb %<>% relocate(plan_name,url,unassigned_geography,unassigned_population,numdists,contiguity_mn,majMin_n,county_split_count,county_split_count)
-
 
 # Add Planscores  
   if (options()$dbclient.pscore.apikey !="") {
@@ -262,18 +263,20 @@ if (GLOBALS$refresh_data) refresh_checkpoint()
 ```{r load-checkpoint}
 load(GLOBALS$checkpoint)
 
-# convenience columns
+# convenience columns, sort order (affects menus)
 contestPlans.tb %<>% 
   mutate(psViewURI = str_replace( planscoreURI, 
       ".*/(.*)/index.json","https://planscore.campaignlegal.org/plan.html?\\1"),
         psView=paste("<a href='",psViewURI,"' target='_ps'>",psViewURI,"</a>",sep=""),
-        dbView=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) 
+        dbView=paste("<a href='",url,"' target='_db'>",url,"</a>",sep="")) %>%
+  arrange(plan_name)
+
+  activeids <- contestPlans.tb %>% select(`id`) %>% pull
 ```
 
 # Explore Scores
 
 ```{r explore-scores}
-
 scores.tb <- contestPlans.tb %>%
   select(`id`, `plan_name`, `unassigned_geography`, `unassigned_population`, `numdists`,
          `plan_region`, `compactness_mn`, `contiguity_mn`, `county_split_sum`,
@@ -282,9 +285,11 @@ scores.tb <- contestPlans.tb %>%
 scoreVars <-setdiff( names(which(sapply(scores.tb,is.numeric))), c("numdists"))
 scoreRegions <- unique(scores.tb$plan_region)
 
-
-
 shinyApp( enableBookmarking = "url",
+          options=list(
+            display.mode="showcase", # NOTE: ignored in markdown environment
+            height=450
+          ),
           ui = function(request) { 
             fluidPage(
               sidebarLayout(
@@ -299,12 +304,11 @@ shinyApp( enableBookmarking = "url",
                 ),
                 mainPanel(
                   tabsetPanel(type = "tabs",
-                              tabPanel("Score Tradeoffs ", plotlyOutput("Tradeoffs") #,
-                                       #textOutput("Selection") # TODO: send selection to other panels
+                              tabPanel("Score Tradeoffs ", plotOutput("Tradeoffs",brush="plan_brush") ,
+                                    #   textOutput("SelectedIDs") # TODO: send selection to other panels
                                        ),
-                              tabPanel("Score Distributions", plotOutput("Distributions")) 
+                              tabPanel("Score Distributions", plotlyOutput("Distributions")) 
                   ),
-                  
                 )
               )
             )
@@ -336,16 +340,24 @@ shinyApp( enableBookmarking = "url",
             # update current table based on selected regions
             filtered.tb <- reactive({ 
               if (input$filterLegal) {
-                scores.tb %>% filter(unassigned_geography==FALSE, 
+                out <- scores.tb %>% filter(unassigned_geography==FALSE, 
                                      unassigned_geography == FALSE,
                                      plan_region==input$region)
               } else {
-                scores.tb %>% filter(plan_region==input$region)
+                out <- scores.tb %>% filter(plan_region==input$region)
               }
+              
+              activeidsl <- out %>% select(`id`) %>% pull
+              
+              assign("activeids", activeidsl, envir = .GlobalEnv)
+
+              out
             })
             
-            
-            output$Tradeoffs <- renderPlotly({
+            # Experimental: monitor active selections
+            activeidsR <- reactive(activeids)
+
+            output$Tradeoffs <- renderPlot({
               p1 <- filtered.tb() %>% 
                 ggplot(aes(x=.data[[input$crit_1]], y= .data[[input$crit_2]],  label=plan_name)) +
                 geom_point() +               
@@ -353,43 +365,191 @@ shinyApp( enableBookmarking = "url",
                 geom_text(aes(alpha=.01)) +
                 facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
                 coord_flip() +
+                  guides(alpha="none") +
                 labs(size="",alpha="")
               
-              ggplotly(p1,source="trade")
+              p1
             })
             
-            output$Selection <- renderText({
-              # if there is no click data, render nothing!
-              pldata <- event_data("plotly_selected", source = "trade")
-              if (is.null(pldata)) return(NULL)
-              
-              # Obtain the clicked x/y variables and fit linear model
-              paste(pldata,names(pldata))
-            })
+            # TODO:  Plotly selection event handling 
+            # output$Selection <- renderText({
+            #   pldata <- event_data("plotly_selected", source = "trade")
+            #   if (is.null(pldata)) return(NULL)
+            #   paste(out,names(pldata))
+            # })
             
-            output$Distributions <- renderPlot({
+            output$SelectedIDs <- renderText({
+                             
+              paste("filtered.tb", dim(filtered.tb())[1],
+                      "activeidsR", length(activeidsR())
+                    )
+
+             })
+            
+            output$Distributions <- renderPlotly({
               p1 <- filtered.tb() %>% 
                 ggplot(aes(y=.data[[input$crit_1]])) +  # NOTE: .data workaround for tidy evaluation in shiny context
                 geom_histogram() + 
-                geom_density(aes(alpha=.5)) +
                 facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
                 coord_flip() +
+                guides(alpha="none") +
                 labs(x="",alpha="") 
               p2 <- filtered.tb() %>% 
                 ggplot(aes(y=.data[[input$crit_2]])) +
                 geom_histogram() + 
-                geom_density(aes(alpha=.5)) +
                 facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
                 coord_flip() +
+                guides(alpha="none") +
                 labs(x="",alpha="") 
               
-              
-              # TODO: test using plotly subplots instead of patchwork: https://plotly.com/r/subplots/
-              pt <- p1 / p2
-              pt
+              # TODO:   abstract patchwork/subplot
+              # TODO: density plot -- geom_density chokes ggplotify
+             # p1/p2
+              subplot(ggplotly(p1,source="dist2"),ggplotly(p2,source="dist2"),nrows=2)
             })
-            
           }
+)
+
+```
+
+# Details
+
+```{r drill-down}
+
+planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
+
+shinyApp(
+       options=list(
+            display.mode="showcase", # NOTE: ignored in markdown environment
+            height=500
+          ),
+  ui <- fluidPage(
+    useShinyjs(),
+    
+    #titlePanel("District Details & Comparison"),
+    
+    sidebarLayout(
+      
+      sidebarPanel(
+        selectInput("selected_plan", "Primary plan", planlist),
+        actionButton('btn_d','Open in DistrictBuilder'),
+        actionButton('btn_p','Open in Plan Score'),
+        withTags({
+          br()
+          hr()
+        }),
+        conditionalPanel(
+          condition = "input.tabs == 'comparison'",
+          selectInput("comparison_plan", "Comparison plan", tail(planlist,-1)),
+        ),
+      ),
+      
+      mainPanel(
+        
+        tabsetPanel(type = "tabs", id="tabs",
+                    tabPanel(value="single", "Plan Map", leafletOutput("map")#, textOutput("SelectedIDs") 
+                             ),
+                    tabPanel(value="single", "Plan Overview", tableOutput("overview")),
+                    tabPanel(value="single", "Plan Districts", DTOutput("details")),
+                    tabPanel(value="comparison", "Map Comparison", plotOutput("compareMap"), tableOutput("compareTable"))
+        )
+      )
+    )
+  ),
+  server <- function(input, output,session) {
+    
+    # update criteria pulldown 2 
+    observe({
+      x <- input$selected_plan
+      
+      y <- planlist[which(planlist!=x)] #NOTE: setdiff removes names from list... avoid
+      
+      updateSelectInput(session, "comparison_plan",
+                        choices = y,
+                        selected = head(y, 1)
+      )
+    })
+    
+    #selection tracking 
+    activeidsR <- reactive(activeids)
+
+    
+    # precompute for efficiency across tabs
+    curPlan <- reactive(contestPlans.tb %>% filter(id==input$selected_plan))
+    curMap <-  reactive(curPlan()[[1,"map"]][[1]])
+    compPlan <- reactive({contestPlans.tb %>% filter(id==input$comparison_plan)})
+    compMap <-  reactive(compPlan()[[1,"map"]][[1]])
+    
+    #TODO: error presentation is a hack -- should figure out how to change output type...
+    curPS <-   reactive({
+      out <- curPlan()[[1,"districtScoreTable"]][[1]]
+      if (is.null(out)) {out = tibble(warning="SCORES MISSING (Plan may be incomplete or corrupt)")}
+      out
+    }) 
+    
+    # button handler
+    onclick("btn_p", runjs(paste(sep="", "window.open('", curPlan()["psViewURI"], "')"))) 
+    onclick("btn_d", runjs(paste(sep="", "window.open('", curPlan()["url"], "')"))) 
+    
+    # # ggplotly based - not supported
+    # output$map <- renderPlotly({
+    #    p<- curMap() %>% ggplot() + geom_sf()
+    #    p %>% ggplotly() # NOTE - geom_sf not supported in ggplotly
+    #   })
+    # 
+    
+      output$SelectedIDs <- renderText({
+                             
+              paste(  "activeidsR", length(activeidsR()))
+       })
+    
+    output$map <- renderLeaflet({
+       p<- curMap() %>% 
+         leaflet() %>% 
+         addTiles() %>%
+         addPolygons(color = "green")
+      p
+     })
+    
+    output$overview <- renderTable({
+      curPlan() %>% select(plan_name,plan_creator,description) 
+    })
+    
+    output$details <- renderDT({
+      curPS()
+    })
+    
+    output$compareMap <- ({
+      renderPlot({
+        p1<- curMap() %>% 
+          ggplot(aes(color= curPlan()$plan_name )) +
+          geom_sf()+
+          geom_sf(data=compMap(),aes(color=compPlan()$plan_name,alpha=0)) +
+          guides(alpha="none") + labs(color="Plan")
+        p1
+      })
+    })
+    
+    output$compareTable <- ({
+      presTB <- reactive({
+        compTb <- bind_rows(curPlan(),compPlan())  %>% select(where(is.numeric))
+        pdiff<-  apply(compTb,2,function(x)(x[1]-x[2]))  
+        tmpo <- bind_rows(compTb,pdiff)
+        pname <- c(curPlan()$plan_name,compPlan()$plan_name,"Difference")
+        tmpo <- bind_cols(planname=pname,tmpo)
+        tmpo
+      })
+      
+      renderTable({
+        presTB()  %>%
+          rownames_to_column() %>%  
+          mutate(across(everything(),as.character)) %>%
+          pivot_longer(-rowname) %>% 
+          pivot_wider(names_from=rowname, values_from=value) 
+      })
+      
+    })
+  }
 )
 
 ```
@@ -402,7 +562,6 @@ shinyApp( enableBookmarking = "url",
 pscore.tb <- reactive(contestPlans.tb %>% select(-map, -districtScoreTable))
 
 # Score table
-thematic_shiny()
 # TODO: Auto size height to avoid vertical scrolling
 renderDT({
    pscore.tb() %>% 
@@ -456,7 +615,7 @@ renderDT({
   })
 
 #TODO: Set specified plan with row tab-selection -- complication is that table ID is autogenerated
-#
+## 
 # rmarkdown::render_delayed({  
 #    renderPrint({
 #     tn <- names(input)
@@ -464,131 +623,5 @@ renderDT({
 #     paste(ts,input)
 #    })
 #  })
-
-```
-
-# Details
-
-```{r drill-down}
-
-planlist <- contestPlans.tb$id ; names(planlist)<-contestPlans.tb$plan_name
-
-shinyApp(
-  ui <- fluidPage(
-    useShinyjs(),
-    
-    #titlePanel("District Details & Comparison"),
-    
-    sidebarLayout(
-      
-      sidebarPanel(
-        selectInput("selected_plan", "Primary plan", planlist),
-        actionButton('btn_d','Open in DistrictBuilder'),
-        actionButton('btn_p','Open in Plan Score'),
-        withTags({
-          br()
-          hr()
-        }),
-        conditionalPanel(
-          condition = "input.tabs == 'comparison'",
-          selectInput("comparison_plan", "Comparison plan", tail(planlist,-1)),
-        ),
-        # withTags({
-        #   br()
-        #   div(class="header", checked=NA,
-        #       a(href="",target="_db","See plan in DistrictBuilder")
-        #   )
-        # })
-    
-      ),
-      
-      mainPanel(
-        
-        tabsetPanel(type = "tabs", id="tabs",
-                    tabPanel(value="single", "Plan Map", plotOutput("map")),
-                    tabPanel(value="single", "Plan Overview", tableOutput("overview")),
-                    tabPanel(value="single", "Plan Districts", DTOutput("details")),
-                    tabPanel(value="comparison", "Map Comparison", plotOutput("compareMap")),
-                    tabPanel(value="comparison", "Score Comparison", tableOutput("compareTable"))
-        )
-      )
-    )
-  ),
-  server <- function(input, output,session) {
-    
-    # update criteria pulldown 2 
-    observe({
-      x <- input$selected_plan
-      
-      y <- planlist[which(planlist!=x)] #NOTE: setdiff removes names from list... avoid
-      
-      updateSelectInput(session, "comparison_plan",
-                        choices = y,
-                        selected = head(y, 1)
-      )
-    })
-    
-    # precompute for efficiency across tabs
-    curPlan <- reactive(contestPlans.tb %>% filter(id==input$selected_plan))
-    curMap <-  reactive(curPlan()[[1,"map"]][[1]])
-    compPlan <- reactive({contestPlans.tb %>% filter(id==input$comparison_plan)})
-    compMap <-  reactive(compPlan()[[1,"map"]][[1]])
-    
-  
-    #TODO: error presentation is a hack -- should figure out how to change output type...
-    curPS <-   reactive({
-      out <- curPlan()[[1,"districtScoreTable"]][[1]]
-      if (is.null(out)) {out = tibble(warning="SCORES MISSING (Plan may be incomplete or corrupt)")}
-      out
-    }) 
-    
-    # button handler
-    onclick("btn_p", runjs(paste(sep="", "window.open('", curPlan()["psViewURI"], "')"))) 
-    onclick("btn_d", runjs(paste(sep="", "window.open('", curPlan()["url"], "')"))) 
-    
-    output$map <- renderPlot({
-      curMap() %>% ggplot() + geom_sf()
-    })
-    
-    output$overview <- renderTable({
-      curPlan() %>% select(plan_name,plan_creator,description) 
-    })
-    
-    output$details <- renderDT({
-      curPS()
-    })
-    
-    output$compareMap <- ({
-      renderPlot({
-        curMap() %>% 
-          ggplot(aes(color= curPlan()$plan_name )) +
-          geom_sf()+
-          geom_sf(data=compMap(),aes(color=compPlan()$plan_name,alpha=0)) +
-          guides(alpha="none") + labs(color="Plan")
-      })
-    })
-    
-    output$compareTable <- ({
-      presTB <- reactive({
-        compTb <- bind_rows(curPlan(),compPlan())  %>% select(where(is.numeric))
-        pdiff<-  apply(compTb,2,function(x)(x[1]-x[2]))  
-        tmpo <- bind_rows(compTb,pdiff)
-        pname <- c(curPlan()$plan_name,compPlan()$plan_name,"Difference")
-        tmpo <- bind_cols(planname=pname,tmpo)
-        tmpo
-      })
-      
-      renderTable({
-        presTB()  %>%
-          rownames_to_column() %>%  
-          mutate(across(everything(),as.character)) %>%
-          pivot_longer(-rowname) %>% 
-          pivot_wider(names_from=rowname, values_from=value) 
-      })
-      
-    })
-    
-  }
-)
 
 ```
