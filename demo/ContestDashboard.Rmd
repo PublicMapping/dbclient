@@ -310,8 +310,8 @@ shinyApp( enableBookmarking = "url",
                 ),
                 mainPanel(
                   tabsetPanel(type = "tabs",
-                              tabPanel("Score Tradeoffs ", plotOutput("Tradeoffs",brush="plan_brush") ,
-                                       #   textOutput("SelectedIDs") # TODO: send selection to other panels
+                              tabPanel("Score Tradeoffs ", plotOutput("Tradeoffs",brush="plan_brush")# ,
+                                      #verbatimTextOutput("info") 
                               ),
                               tabPanel("Score Distributions", plotlyOutput("Distributions")) 
                   ),
@@ -392,16 +392,26 @@ shinyApp( enableBookmarking = "url",
             activeidsR <- reactive(activeids)
             
             output$Tradeoffs <- renderPlot({
-              p1 <- filtered.tb() %>% 
-                ggplot(aes(x=.data[[input$crit_1]], y= .data[[input$crit_2]],  label=plan_name)) +
+      
+              #TODO: Note the approach to workaround lazy evaluation and brush_point failure
+              # research a better way
+              plot.tb <- filtered.tb() 
+              plot.tb$crit_1 <- plot.tb[[input$crit_1]]
+              plot.tb$crit_2 <- plot.tb[[input$crit_2]]
+
+              p1 <- plot.tb %>% 
+                #ggplot(aes(x=.data[[input$crit_1]], y= .data[[input$crit_2]],  label=plan_name)) +
+               ggplot(aes(x= crit_1, y= crit_2,  label=plan_name)) +
+
                 geom_point() +               
                 geom_smooth(aes(alpha=.01)) +
                 geom_text(aes(alpha=.01)) +
                 facet_wrap(nrow=1,facets=vars(numdists), labeller="label_both")+
                 coord_flip() +
                 guides(alpha="none") +
-                labs(size="",alpha="")
+                labs(size="",alpha="",x=input$crit_1,y=input$crit_2)
               
+              curplot<<-p1
               p1
             })
             
@@ -447,10 +457,15 @@ shinyApp( enableBookmarking = "url",
             
             # update planlist pulldown 1
             planlist <- reactive ({ 
+              sid = selected_ids()
               x <- filtered.tb() %>% select(id,plan_name)
               y <- x$id; names(y)<-x$plan_name
+              if(length(sid)>0) {
+                y<- y[which(y %in% sid)] 
+              } 
               y
             })
+            
             observe({
               y <- planlist()
               
@@ -471,6 +486,25 @@ shinyApp( enableBookmarking = "url",
                                 choices = y,
                                 selected = head(y, 1)
               )
+            })
+            
+             selected_ids <- reactive ({
+      
+              pb <- input$plan_brush
+              if (is.null(pb)) return(list())
+              
+              plot.tb <- filtered.tb() 
+              plot.tb["crit_1"] <- plot.tb[[input$crit_1]]
+              plot.tb["crit_2"] <- plot.tb[[input$crit_2]]
+              bpi <- brushedPoints(df=plot.tb,pb,xvar = input$crit1_1,yvar=input$crit_2)
+              plot.tb %<>% select(id,crit_1,crit_2)
+              
+              #TODO: Debug brushed points -- this is a workaround -- wouldn't work for multiple panels
+
+              sid<- plot.tb %>% rowwise() %>% filter( crit_1 <= pb$ymax, crit_1 >= pb$ymin,
+                                  crit_2 <= pb$xmax, crit_2 >= pb$xmin ) %>% pull(id)
+              
+              sid
             })
             
             
@@ -498,9 +532,20 @@ shinyApp( enableBookmarking = "url",
             #   })
             # 
             
-            output$SelectedIDs <- renderText({
-              
-              paste(  "activeidsR", length(activeidsR()))
+            output$info <- renderText({
+      
+              pb <- input$plan_brush
+              xy_range_str <- function(e) {
+                if(is.null(e)) return("NULL\n")
+                paste0("xmin=", round(e$xmin, 1), " xmax=", round(e$xmax, 1), 
+                       " ymin=", round(e$ymin, 1), " ymax=", round(e$ymax, 1))
+              }
+           
+              paste0(
+                "brush: ", xy_range_str(pb),
+                "selected: ", selected_ids(),
+                collapse=","
+              )
             })
             
             output$map <- renderLeaflet({
