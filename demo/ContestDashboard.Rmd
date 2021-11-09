@@ -296,6 +296,7 @@ shinyApp( enableBookmarking = "url",
             planlist_start<- contestPlans.tb$id ; names(planlist_start)<-contestPlans.tb$plan_name
 
             fluidPage(
+                 useShinyjs(),  
               titlePanel("Compare Scores"),
               
               sidebarLayout(
@@ -351,13 +352,19 @@ shinyApp( enableBookmarking = "url",
             # update criteria pulldown 2 
             observe({
               x <- input$crit_1
+              cur_c2 <- input$crit_2
               
               y <- setdiff(scoreVars,x)
+              
+              # if current selection is invalidated, change it
+              if (! cur_c2 %in% y) {
+                cur_c2 <- head(y,1)
+              }
               
               # Can also set the label and select items
               updateSelectInput(session, "crit_2",
                                 choices = y,
-                                selected = head(y, 1)
+                                selected = cur_c2
               )
             })
             
@@ -522,9 +529,12 @@ shinyApp( enableBookmarking = "url",
             }) 
             
             # button handler
-            onclick("btn_p", runjs(paste(sep="", "window.open('", curPlan()["psViewURI"], "')"))) 
-            onclick("btn_d", runjs(paste(sep="", "window.open('", curPlan()["url"], "')"))) 
-            
+            observe({
+              curPlan()
+              
+              onclick("btn_p", runjs(paste(sep="", "window.open('", curPlan()["psViewURI"], "')"))) 
+              onclick("btn_d", runjs(paste(sep="", "window.open('", curPlan()["url"], "')"))) 
+            })
             # # ggplotly based - not supported
             # output$map <- renderPlotly({
             #    p<- curMap() %>% ggplot() + geom_sf()
