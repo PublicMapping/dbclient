@@ -1,0 +1,14 @@
+name: MapAcrossAmerica
+title: MapAcrossAmerica
+username:
+account: drmaltman
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 5038743
+bundleId: 5233011
+url: https://drmaltman.shinyapps.io/MapAcrossAmerica/
+when: 1636482025.19703
+lastSyncTime: 1636482025.19706
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: ../R/dbclient.R

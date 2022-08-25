@@ -1,0 +1,22 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+names(contestPlans.tb)
+
+```
+
+```{r}
+unassigned.tb<-contestPlans.tb %>% rowwise() %>% transmute(head= map %>% as.data.frame() %>% slice_head(n=1)) %>%unpack(head)
+
+unassigned_scores.tb <- unassigned.tb %>% rowwise() %>% transmute(
+  unassigned_geography=(length(geometry[[1]])>0),
+  unassigned_population= sum(c_across(starts_with("properties.demographics")),na.rm=TRUE)>0
+           )
+
+contestPlans.tb %<>% bind_cols(unassigned_scores.tb)  %>% relocate(plan_name,url,unassigned_geography,unassigned_population)
+
+
+```

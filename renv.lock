@@ -11,7 +11,10 @@
   "Packages": {
     "renv": {
       "Package": "renv",
-      "Version": "0.14.0",
+      "Version": "0.15.5",
+      "OS_type": NA,
+      "NeedsCompilation": "no",
+      "Repository": "CRAN",
       "Source": "Repository"
     }
   }

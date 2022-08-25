@@ -1,0 +1,236 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+# test harvesting
+source("R/dbclient.R")
+.onLoad()
+r<-retrieve_plans( targetdir="tmp", after="2021-09-25", start=1, pagesize=20)
+r
+```
+
+```{r}
+# test geomander integration
+
+
+  if (!("Id" %in% names(dra) & "District" %in% names(dra))) {
+    stop("dra provided as dataframe, but `Id` and/or `District` column not present.")
+  }
+}
+
+  dra <- dra %>% rename(District_DRA = District)
+  shp <- tigris::blocks(state)
+  shp$GEOID10 <- as.double(shp$GEOID10)
+  shp <- shp %>% left_join(dra, by = c(GEOID10 = "Id"))
+  return(shp)
+```
+
+```{r}
+# test meta
+source("R/dbclient.R")
+.onLoad()
+tfg <- "tmp/32e5d326-02af-44a9-944b-e2add24d9613.geojson.gz"
+tstg <- jsonlite::fromJSON(gzfile(tfg),flatten=TRUE)
+tf <- "tmp/32e5d326-02af-44a9-944b-e2add24d9613.json.gz"
+tst <- jsonlite::fromJSON(gzfile(tf),flatten=TRUE)
+in
+
+
+g
+View(tst$features)
+View(tst)
+View(tstg)
+
+jsonStr <- readr::read_file(tfg)
+tstSf <- geojsonsf::geojson_sf(jsonStr)
+plot(tstSf)
+
+db2sf("32e5d326-02af-44a9-944b-e2add24d9613",targetdir="tmp")
+
+tmpf<- jsonlite::fromJSON("contest_tmp/plans/87e46459-08b6-49ba-ba33-b835d993e843.geojson.gz",flatten=TRUE)
+
+ jsonStr <- readr::read_file("contest_tmp/plans/87e46459-08b6-49ba-ba33-b835d993e843.geojson.gz")
+    tmps<- geojsonsf::geojson_sf(jsonStr)
+tmps<- 
+```
+
+```{r}
+
+
+tstids <- c("32e5d326-02af-44a9-944b-e2add24d9613","530585f8-557f-4e60-a6af-0ac50d6df271","32d4da61-ef4f-4015-8d21-7f64ab895dbc")
+
+tstid <- c("32e5d326-02af-44a9-944b-e2add24d9613")
+
+db2meta(tstids,"tmp")
+
+source("R/dbclient.R")
+
+res<-db2geomander(tstid,"tmp")
+res
+
+shp <- tigris::blocks("42")
+
+  shp <- tigris::blocks(fipstate)
+  shp$GEOID10 <- as.double(shp$GEOID10)
+  shp <- left_join(shp,dra, by = c(GEOID10 = "Id"))
+  return(shp)
+
+```
+
+```{r}
+#f<- "contest_tmp/plans/13739862-18d1-4693-b382-2fd56b508a44.geojson.gz"
+#apikey <- "DfqELj2K"
+#to<- 60
+
+resg<- geo2planscore( "contest_tmp/plans/13739862-18d1-4693-b382-2fd56b508a44.geojson.gz","DfqELj2K")
+debug(geo2planscore)
+resg<- geo2planscore(continueURI= "https://planscore.s3.amazonaws.com/uploads/20211025T190518.474276707Z/index.json")
+
+geo2planscore<-function(f="",apikey,to=60, continueURI = NULL ) {
+  
+  if (is.null(continueURI)) {
+    # post part 1
+    
+    r1<- httr::GET("https://api.planscore.org/upload",
+                   httr::add_headers(.headers=c(
+                     "Authorization" = paste(sep="","Bearer ", apikey)
+                   )),
+                   httr::timeout(to)
+    )
+    
+    if (r1$status_code != 200) {
+      warning("PlanScore failed at stage 1 (possible bad api key): ", httr::content(r1) )
+      return(list(file=f))
+    }
+    
+    
+    # post part 2: S3 Bucket Upload
+    fgu <- R.utils::gunzip(f, temporary=TRUE, overwrite=TRUE, remove=FALSE)
+    uri2 <- httr::content(r1)[[1]]
+    headers2 <- httr::content(r1)[[2]]
+    upl <- httr::upload_file(fgu)
+    
+    params <- headers2
+    params <- append(params,list("file"=upl))
+    
+    r2 <- httr::POST(uri2,
+                     body =  params, # NOTE: fragile syntax for upl
+                     httr::timeout(to),
+                     encode="multipart"
+                     #httr::verbose()
+    )
+    
+    # TODO: Response is 503 with URI should be 301, but redirect URI is included
+    #       Follow up 
+    
+    uri3 <- r2[1]$url
+    
+    if (is.null(uri3))  {
+      warning("PlanScore failed at stage 1 (possible bad api key): ", httr::content(r2) )
+      return(list(file=f))
+    }
+    
+    # post part 3: follow up
+    
+    
+    r3<- httr::POST(uri3,
+                    httr::add_headers(.headers=c(
+                      "Authorization" = paste(sep="","Bearer ", apikey),
+                      "Content-Type" = " application/json"
+                    )),
+                    body = '{"description": "dbclient upload"}',
+                    httr::timeout(to)
+                    
+    )
+    
+    # Stage 4: poll reply
+    
+    if (r3$status_code != 200) {
+      warning("PlanScore failed at stage 3, status: ", r3$status_code )
+      return(list(file=f))
+    }
+    
+    uri4 <- httr::content(r3)$index_url
+    
+  } else {
+    uri4=continueURI
+  }
+  
+  #polling loop
+  
+  getResultsOnce<- function(u) {
+    r<- httr::GET(u) 
+    if (r$status_code!=200) stop("Bad http status", r$status_code)
+    res <- jsonlite::fromJSON(httr::content(r,encoding="UTF-8"),flatten=TRUE)
+    if (!res$status) stop("Bad planscore status")
+    if (res$progress[1]!=res$progress[2]) stop("Not finished")
+    res
+  } 
+  
+  getResults <-
+    purrr::possibly(
+      purrr::insistently(getResultsOnce, 
+                         rate = purrr::rate_backoff(  pause_base = 10,  pause_cap = 120, max_times=8)
+      ),
+      otherwise=NULL
+    )
+  
+  rval <- getResults(uri4)
+  
+  if (is.null(rval)) {
+    warning("PlanScore failed at final stage of computing scores ", uri4 )
+    return(list(file=f,planscoreURI=uri4))
+    
+  }
+  
+  res <- dplyr::tibble(file=f,
+                       planscoreURI=uri4,dplyr::as_tibble(rval$summary),
+                       districts=list(rval$districts))
+  
+  res 
+}
+```
+
+```{bash}
+touch plan-blockassignments.csv
+
+curl --request POST \
+    --form key={key} \
+    --form AWSAccessKeyId={AWSAccessKeyId} \
+    --form x-amz-security-token={x-amz-security-token} \
+    --form policy={policy} \
+    --form signature={signature} \
+    --form acl={acl} \
+    --form success_action_redirect={success_action_redirect} \
+    --form file=@null-plan-blockassignments.csv \
+    https://planscore.s3.amazonaws.com/
+```
+
+```{r}
+fn<-"contest_tmp/plans/13739862-18d1-4693-b382-2fd56b508a44.geojson.gz"
+bn<-basename(fn)
+stringr::str_replace(basename(fn),"(.*?)\\.(.*)","\\1")
+
+r<-httr::GET("http://www.mit.edu",httr::write_disk("tmpout"))
+httr::content(r)
+
+fn
+paste(sep="","file://",normalizePath(fn))
+```
+
+```{r}
+#resg<- geo2planscore( "contest_tmp/plans/13739862-18d1-4693-b382-2fd56b508a44.geojson.gz","DfqELj2K", targetdir = "contest_tmp/plans")
+
+ids <- c("13739862-18d1-4693-b382-2fd56b508a44","ed2f4297-2e78-4ad5-92d9-9fbfbbea2e59","cb2a11f5-cb98-4cd5-a6c5-68e312fc68d9","530585f8-557f-4e60-a6af-0ac50d6df271")
+
+source("R/dbclient.R")
+.onLoad()
+options(dbclient.pscore.apikey = "DfqELj2K")
+debug(geo2planscore)
+
+
+resp.df <- generate_planscore_df(ids, targetdir="contest_tmp/plans")
+
+```
